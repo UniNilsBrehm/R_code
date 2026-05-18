@@ -1,7 +1,6 @@
 # ==============================================================================
 # Bayesian nonlinear mixed model for zebrafish dark-flash habituation
 # ==============================================================================
-
 library(readr)
 library(dplyr)
 library(tidyr)
@@ -13,14 +12,19 @@ library(tidybayes)
 library(posterior)
 library(loo)
 
-source("C:/UniFreiburg/Code/R_code/susana/utils.R")
 
-base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
 file_dir <- file.path(
   base_dir,
   "data_files",
   "SPZ_ISI60_removed_non_responders_2stimuli.csv"
 )
+
+var_name = 'peak_distance'
 
 # ==============================================================================
 # Load and prepare data
@@ -49,7 +53,7 @@ any(df_resp$max_peak <= 0, na.rm = TRUE)
 # ==============================================================================
 # The Model
 # ==============================================================================
-model_peak <- bf(
+model <- bf(
   max_peak ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0),
   
   Asym ~ Genotype * Block + (1 | animal),
@@ -62,7 +66,7 @@ model_peak <- bf(
 # ==============================================================================
 # The Priors
 # ==============================================================================
-priors_peak <- c(
+priors <- c(
   set_prior("normal(0, 1)", nlpar = "Asym", class = "b"),
   set_prior("normal(0, 1)", nlpar = "R0", class = "b"),
   set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"),
@@ -77,27 +81,11 @@ priors_peak <- c(
 # ==============================================================================
 # Fit the model
 # ==============================================================================
-# Fast test:
-fit_peak <- brm(
-  formula = model_peak,
+fit_model <- brm(
+  formula = model,
   data = df_resp,
   family = Gamma(link = "log"),
-  prior = priors_peak,
-  backend = "cmdstanr",
-  chains = 1,
-  cores = 1,
-  iter = 500,
-  warmup = 250,
-  seed = 42,
-  control = list(adapt_delta = 0.85, max_treedepth = 8)
-)
-
-
-fit_peak <- brm(
-  formula = model_peak,
-  data = df_resp,
-  family = Gamma(link = "log"),
-  prior = priors_peak,
+  prior = priors,
   backend = "cmdstanr",
   chains = 4,
   cores = 4,
@@ -107,38 +95,238 @@ fit_peak <- brm(
   seed = 42,
   control = list(adapt_delta = 0.95, max_treedepth = 15)
 )
+
 # ==============================================================================
 # Get summary and diagnostics
 # ==============================================================================
-summary(fit_peak)
-plot(fit_peak)
-pp_check(fit_peak)
-# pp_check(fit_peak, type = "bars", ndraws = 100)
+summary(fit_model)
+
+diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
+
+# Trace plots
+trace_plots <- plot(fit_model, ask = FALSE)
+for (i in seq_along(trace_plots)) {
+  ggsave(
+    filename = file.path(
+      diag_dir,
+      paste0("nlme_", var_name, "_traceplot_", i, ".png")
+    ),
+    plot = trace_plots[[i]],
+    width = 12,
+    height = 8,
+    dpi = 300
+  )
+}
+
+# Posterior predictive checks
+p1 <- pp_check(fit_model, ndraws = 100)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
+  p1,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p2 <- pp_check(
+  fit_model,
+  type = "dens_overlay",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_densed_overlay.png")),
+  p2,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p3 <- pp_check(
+  fit_model,
+  type = "hist",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir,paste0("nlme_", var_name,"hist.png")),
+  p3,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p4 <- pp_check(
+  fit_model,
+  type = "ecdf_overlay",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_ecdf.png")),
+  p4,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p5 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "stimulus0",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_stimulus.png")),
+  p5,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+
+p6 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "Genotype",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_genotype.png")),
+  p6,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p7 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "Block",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_block.png")),
+  p7,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
 # Check the correlations between the main non-linear parameters
-pairs(fit_peak, variable = c("b_Asym_Intercept", "b_R0_Intercept", "b_lrc_Intercept"))
+# identifiability of nonlinear parameters
+save_plot_as_png(
+  paste0("nlme_", var_name, "_pairs_plot.png"),
+  quote(
+    pairs(
+      fit_model,
+      variable = c(
+        "b_Asym_Intercept",
+        "b_R0_Intercept",
+        "b_lrc_Intercept"
+      )
+    )
+  ),
+  width = 2200,
+  height = 2200
+)
+
+# Residuals
+yrep <- posterior_predict(fit_model, ndraws = 200)
+
+sim_res <- createDHARMa(
+  simulatedResponse = t(yrep),
+  observedResponse = df_resp$max_peak,
+  fittedPredictedResponse = fitted(fit_model)[, "Estimate"]
+)
+
+save_plot_as_png(
+  paste0("nlme_", var_name, "_DHARMa_residuals.png"),
+  quote(plot(sim_res))
+)
+
+# Compute leave-one-out cross-validation:
+loo_var <- loo(fit_model)
+print(loo_var)
+save_plot_as_png(
+  paste0("nlme_", var_name, "_loo_plot.png"),
+  quote(plot(loo_var))
+)
+# loo_compare(loo1, loo2)  # compare models
+
+# Random effects
+re_df <- ranef(fit_model)$animal
+
+re_long <- bind_rows(
+  as.data.frame(re_df[, , "Asym_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "Asym"),
+  as.data.frame(re_df[, , "R0_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "R0"),
+  as.data.frame(re_df[, , "lrc_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "lrc")
+)
+
+p_re <- ggplot(re_long,
+               aes(x = reorder(animal, Estimate),
+                   y = Estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5),
+                width = 0) +
+  coord_flip() +
+  facet_wrap(~nlpar, scales = "free_x") +
+  theme_bw() +
+  labs(x = "Animal", y = "Random effect estimate")
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_random_effects.png")),
+  p_re,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+
+# Conditional effects plots
+ce <- conditional_effects(
+  fit_model,
+  effects = "stimulus0:Genotype",
+  re_formula = NA
+)
+save_plot_as_png(
+  paste0("nlme_", var_name, "_conditional_effects.png"),
+  quote(plot(ce)),
+  width = 2200,
+  height = 1800
+)
+
 
 # ==============================================================================
 # Save fitted model to HDD
 # ==============================================================================
 saveRDS(
-  fit_peak,
-  file = file.path(base_dir, "data_files", "bayesian_nlme_peak_distance_results.rds")
+  fit_model,
+  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
 )
 
 # ==============================================================================
 # Load fitted model if available
 # ==============================================================================
-fit_peak <- readRDS(
-  file.path(base_dir, "data_files", "bayesian_nlme_peak_distance_results.rds")
+fit_model <- readRDS(
+  file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
 )
 
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-# ==============================================================================
-# Plot peak distance moved curves
-# ==============================================================================
-
 new_peak <- df_resp %>%
   group_by(Genotype, Block) %>%
   summarise(
@@ -157,7 +345,7 @@ new_peak <- df_resp %>%
   )
 
 pred_peak <- fitted(
-  fit_peak,
+  fit_model,
   newdata = new_peak,
   re_formula = NA,
   summary = TRUE
@@ -217,18 +405,16 @@ ggsave(
   filename = file.path(
     base_dir,
     "figs",
-    "NLME_peak_distance_habituation_curves.png"
+    paste0("nlme_", var_name, "_habituation_curves.png")
   ),
-  plot = p_resp_exp,
+  plot = p_peak_exp,
   width = 14,
   height = 7,
   dpi = 300
 )
-
 # ==============================================================================
-# Plot latent-scale (log-scale) exponential curves WITH raw data
+# Plot latent-scale (log-scale) exponential curves
 # ==============================================================================
-
 # ------------------------------------------------------------------------------
 # 1. Create prediction grid
 # ------------------------------------------------------------------------------
@@ -254,7 +440,7 @@ new_peak_log <- df_resp %>%
 # ------------------------------------------------------------------------------
 
 pred_log_peak <- fitted(
-  fit_peak,
+  fit_model,
   newdata = new_peak_log,
   re_formula = NA,
   scale = "linear",
@@ -350,14 +536,224 @@ ggsave(
   filename = file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_habituation_curves_logit_scale_with_raw.png"
+    paste0("nlme_", var_name, "_habituation_curves_logit_scale_with_raw.png")
   ),
-  plot = p_logit,
+  plot = p_log_peak,
   width = 14,
   height = 7,
   dpi = 300
 )
 
+# ==============================================================================
+# Plot Habituation curves WITH true raw peak-distance data
+# ==============================================================================
+
+new_peak <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Genotype, Block) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 100)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block = factor(Block, levels = levels(df_resp$Block))
+  )
+
+pred_peak <- fitted(
+  fit_model,
+  newdata = new_peak,
+  re_formula = NA,
+  summary = TRUE
+)
+
+pred_peak_data <- bind_cols(
+  new_peak,
+  as.data.frame(pred_peak)
+) %>%
+  rename(
+    fit = Estimate,
+    CI_low = Q2.5,
+    CI_high = Q97.5
+  )
+
+p_peak_exp <- ggplot(
+  pred_peak_data,
+  aes(
+    x = stimulus,
+    color = Genotype,
+    fill = Genotype
+  )
+) +
+  facet_grid(Block ~ Genotype, scales = "fixed") +
+  
+  geom_jitter(
+    data = df_resp,
+    aes(
+      x = stimulus,
+      y = max_peak,
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    width = 0.15,
+    height = 0,
+    alpha = 0.12,
+    size = 0.7
+  ) +
+  
+  geom_ribbon(
+    aes(
+      ymin = CI_low,
+      ymax = CI_high
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
+  ) +
+  
+  theme_pubr(base_size = 14) +
+  labs(
+    x = "Stimulus number within block",
+    y = "Peak distance moved",
+    color = "Genotype",
+    fill = "Genotype"
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
+  )
+
+print(p_peak_exp)
+
+ggsave(
+  filename = file.path(
+    base_dir,
+    "figs",
+    paste0("nlme_", var_name, "_habituation_curves_true_raw_data.png")
+  ),
+  plot = p_peak_exp,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+# ==============================================================================
+# Plot latent-scale (log-scale) exponential curves WITH true raw peak-distance data
+# ==============================================================================
+
+new_peak_log <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Genotype, Block) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 200)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block = factor(Block, levels = levels(df_resp$Block))
+  )
+
+pred_log_peak <- fitted(
+  fit_model,
+  newdata = new_peak_log,
+  re_formula = NA,
+  scale = "linear",
+  summary = TRUE
+)
+
+pred_log_peak_data <- bind_cols(
+  new_peak_log,
+  as.data.frame(pred_log_peak)
+) %>%
+  rename(
+    fit = Estimate,
+    CI_low = Q2.5,
+    CI_high = Q97.5
+  )
+
+raw_peak_log <- df_resp %>%
+  filter(max_peak > 0) %>%
+  mutate(
+    log_peak = log(max_peak)
+  )
+
+p_log_peak <- ggplot(
+  pred_log_peak_data,
+  aes(
+    x = stimulus,
+    color = Genotype,
+    fill = Genotype
+  )
+) +
+  facet_grid(Block ~ Genotype, scales = "fixed") +
+  
+  geom_jitter(
+    data = raw_peak_log,
+    aes(
+      x = stimulus,
+      y = log_peak,
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    width = 0.15,
+    height = 0,
+    alpha = 0.12,
+    size = 0.7
+  ) +
+  
+  geom_ribbon(
+    aes(
+      ymin = CI_low,
+      ymax = CI_high
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
+  ) +
+  
+  theme_pubr(base_size = 14) +
+  labs(
+    x = "Stimulus number within block",
+    y = "Latent peak distance moved (log scale)",
+    title = "Bayesian nonlinear habituation curves on latent log scale",
+    color = "Genotype",
+    fill = "Genotype"
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
+  )
+
+print(p_log_peak)
+
+ggsave(
+  filename = file.path(
+    base_dir,
+    "figs",
+    paste0("nlme_", var_name, "_habituation_curves_logit_scale_true_raw_binary.png")
+  ),
+  plot = p_log_peak,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
 # ==============================================================================
 # Compare habituation rate k between all Genotypes
 # ==============================================================================
@@ -378,7 +774,7 @@ k_grid <- expand.grid(
 # 2. Extract posterior draws for lrc
 # ------------------------------------------------------------------------------
 lrc_draws <- posterior_linpred(
-  fit_peak,
+  fit_model,
   newdata = k_grid,
   nlpar = "lrc",
   re_formula = NA,
@@ -475,10 +871,11 @@ write.csv(
   file.path(
     base_dir,
     "results",
-    "response_prob_nlme_habituation_rate_all_pairwise_comparisons.csv"
+    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
 )
+
 
 # ------------------------------------------------------------------------------
 # 7. Plot posterior distributions of k
@@ -509,7 +906,7 @@ ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_habituation_rate_posteriors.png"
+    paste0("nlme_", var_name, "_habituation_rate_posteriors.png")
   ),
   p_k,
   width = 10,
@@ -554,7 +951,7 @@ ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_habituation_rate_all_pairwise_ratios.png"
+    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_ratios.png")
   ),
   p_compare,
   width = 10,
@@ -577,7 +974,7 @@ asym_grid <- expand.grid(
   )
 
 asym_draws <- posterior_linpred(
-  fit_peak,
+  fit_model,
   newdata = asym_grid,
   nlpar = "Asym",
   re_formula = NA,
@@ -644,7 +1041,7 @@ write.csv(
   file.path(
     base_dir,
     "results",
-    "response_prob_nlme_Asym_all_pairwise_comparisons.csv"
+    paste0("nlme_", var_name, "_Asym_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
 )
@@ -672,7 +1069,7 @@ ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_Asym_posteriors.png"
+    paste0("nlme_", var_name, "_Asym_posteriors.png")
   ),
   p_asym,
   width = 10,
@@ -708,11 +1105,12 @@ p_asym_compare <- asym_comparison_summary %>%
 
 print(p_asym_compare)
 
+
 ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_Asym_all_pairwise_differences.png"
+    paste0("nlme_", var_name, "_Asym_all_pairwise_differences.png")
   ),
   p_asym_compare,
   width = 10,
@@ -735,7 +1133,7 @@ r0_grid <- expand.grid(
   )
 
 r0_draws <- posterior_linpred(
-  fit_peak,
+  fit_model,
   newdata = r0_grid,
   nlpar = "R0",
   re_formula = NA,
@@ -802,7 +1200,7 @@ write.csv(
   file.path(
     base_dir,
     "results",
-    "response_prob_nlme_R0_all_pairwise_comparisons.csv"
+    paste0("nlme_", var_name, "_R0_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
 )
@@ -831,14 +1229,13 @@ ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_R0_posteriors.png"
+    paste0("nlme_", var_name, "_R0_posteriors.png")
   ),
   p_r0,
   width = 10,
   height = 5,
   dpi = 300
 )
-
 # ------------------------------------------------------------------------------
 # Plot all pairwise R0 comparisons
 # ------------------------------------------------------------------------------
@@ -871,7 +1268,7 @@ ggsave(
   file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_R0_all_pairwise_differences.png"
+    paste0("nlme_", var_name, "_R0_all_pairwise_differences.png")
   ),
   p_r0_compare,
   width = 10,

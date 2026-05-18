@@ -31,10 +31,13 @@ library(dplyr)        # Data manipulation
 library(tidyr)        # Data reshaping
 library(performance)  # Model diagnostics (AIC, R², etc.)
 library(ggpubr)       # Publication-ready plots
+library(ordinal)
 
-source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
 
-base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
 file_dir <- file.path(
   base_dir,
   "data_files",
@@ -49,6 +52,10 @@ res <- load_data_darkflash_60s(file_dir, move_th = 0.2, , take_peak = 0)
 
 df_final <- res$df_final
 df_final_sub <- res$df_final_sub
+df_final_sub$delay_ord <- factor(
+  df_final_sub$delay,
+  ordered = TRUE
+)
 
 # Number of animals per genotype
 n_per_genotype <- df_final %>%
@@ -126,14 +133,14 @@ ggsave(
 message("Fitting GLMM models...")
 # --- Model 1: Peak Movement (Gamma GLMM) -------------------------------------
 m_peak <- glmmTMB(
-  max_peak ~ Genotype * stimulus_log * Block + (1 | Video/Well),
+  max_peak ~ Genotype * stimulus_log * Block + (stimulus_log | Video/Well),
   family = Gamma(link = "log"),
   data = df_final_sub
 )
 
 # --- Model 2: Summed Distance (Gamma GLMM) -----------------------------------
 m_sum <- glmmTMB(
-  max_cumsum ~ Genotype * stimulus_log * Block + (1 | Video/Well),
+  max_cumsum ~ Genotype * stimulus_log * Block + (stimulus_log | Video/Well),
   family = Gamma(link = "log"),
   data = df_final_sub
 )
@@ -141,17 +148,43 @@ m_sum <- glmmTMB(
 # --- Model 3: Response Delay (Gaussian GLMM) ----------------------------------
 df_final_sub$delay_non_zero <- df_final_sub$delay + 0.001
 m_delay <- glmmTMB(
-  delay_non_zero ~ Genotype * stimulus_log * Block + (1 | Video/Well),
+  delay_non_zero ~ Genotype * stimulus_log * Block + (stimulus_log || Video/Well),
   family = gaussian(link = "identity"),
   data = df_final_sub
 )
 
+m_delay_ordinal <- clmm(
+  delay_ord ~ Genotype * stimulus_log * Block +
+    (1 | Video) +
+    (1 | Video:Well),
+  data = df_final_sub,
+  link = "logit"
+)
+
 # --- Model 4: Response Prob (Binomial GLMM) -----------------------------------
 m_prob <- glmmTMB(
-  move ~ Genotype * Block * stimulus_log + (1 | Video/Well),
+  move ~ Genotype * Block * stimulus_log + (stimulus_log | Video/Well),
   family = binomial(link = "logit"),
   data = df_final
 )
+
+# ==============================================================================
+# Save Model Fits to HDD
+# ==============================================================================
+saveRDS(m_peak, file = file.path(base_dir, "models", "m_peak.rds"))
+saveRDS(m_sum, file = file.path(base_dir, "models", "m_sum.rds"))
+saveRDS(m_delay, file = file.path(base_dir, "models", "m_delay.rds"))
+saveRDS(m_delay_ordinal, file = file.path(base_dir, "models", "m_delay_ordinal.rds"))
+saveRDS(m_prob, file = file.path(base_dir, "models", "m_prob.rds"))
+
+# ==============================================================================
+# Load Model Fits to HDD
+# ==============================================================================
+m_peak <- readRDS(file.path(base_dir, "models", "m_peak.rds"))
+m_sum <- readRDS(file.path(base_dir, "models", "m_sum.rds"))
+m_delay <- readRDS(file.path(base_dir, "models", "m_delay.rds"))
+m_delay_ordinal <- readRDS(file.path(base_dir, "models", "m_delay_ordinal.rds"))
+m_prob <- readRDS(file.path(base_dir, "models", "m_prob.rds"))
 
 # ==============================================================================
 # Model Validation
@@ -173,152 +206,44 @@ validate_model(m_prob, df_final)
 # ==============================================================================
 # COMPARISON TESTS
 # ==============================================================================
-## ---------------------------------------------------------------------------
-## Response Prob.
-## ---------------------------------------------------------------------------
-# --- Block-level EMMs (dynamic across all blocks) ------------------------------
-emm_prob <- get_emm_blocks(m_prob, df_final)
+# ------------------------------------------------------------------------------
+# Response Prob.
+# ------------------------------------------------------------------------------
+get_all_comparisons(
+  m_prob, df_final, n_stim=60, label_name='response prob.', 
+  save_dir=file.path(base_dir, "results", "glmm_response_prob_comparisons.txt")
+  )
 
-# --- Habituation slopes (within blocks) --------------------------------------
-emm_prob_slopes <- emtrends(m_prob, ~ Genotype | Block, var = "stimulus_log")
-emm_prob_slopes_pairs <- pairs(emm_prob_slopes)
+# ------------------------------------------------------------------------------
+# Peak Distance
+# ------------------------------------------------------------------------------
+get_all_comparisons(
+  m_peak, df_final_sub, n_stim=60, label_name='peak distance', 
+  save_dir=file.path(base_dir, "results", "glmm_peak_distance_comparisons.txt")
+)
 
-# --- Between-block comparisons (1 vs 2, 2 vs 3, etc.) -------------------------
-emm_prob_between <- get_emm_consecutive_blocks(m_prob, df_final, n_stim = 9)
+# ------------------------------------------------------------------------------
+# Summed Distance
+# ------------------------------------------------------------------------------
+get_all_comparisons(
+  m_sum, df_final_sub, n_stim=60, label_name='summed distance', 
+  save_dir=file.path(base_dir, "results", "glmm_summed_distance_comparisons.txt")
+)
 
-# Compare the n first an n first of blocks
-emm_prob_between_first <- get_emm_consecutive_blocks_first(m_prob, df_final, n_stim = 9)
+# ------------------------------------------------------------------------------
+# Response Delay (Ordinal Model)
+# ------------------------------------------------------------------------------
+get_all_comparisons(
+  m_delay_ordinal, df_final_sub, n_stim=60, label_name='delay (ordinal)', 
+  save_dir=file.path(base_dir, "results", "glmm_delay_ordinal_comparisons.txt")
+)
 
-# --- Between-block slopes -----------------------------------------------------
-emm_prob_between_blocks_slopes <- emtrends(m_prob, ~ Block | Genotype, var = "stimulus_log")
-emm_prob_between_blocks_slopes_pairs <- pairs(emm_prob_between_blocks_slopes)
-
-
-write_emm_report(
-  model = m_prob,
-  emm_blocks = emm_prob,
-  emm_slopes = emm_prob_slopes,
-  emm_slopes_pairs = emm_prob_slopes_pairs,
-  emm_between = emm_prob_between,
-  emm_between_first = emm_prob_between_first,
-  emm_between_blocks_slopes = emm_prob_between_blocks_slopes,
-  emm_between_blocks_slopes_pairs = emm_prob_between_blocks_slopes_pairs,
-  outfile = file.path(base_dir, "response_prob", "spaced_glmm_response_prob_comparisons.txt"),
-  model_name = "GLMM Response Probability Model"
+get_all_comparisons(
+  m_prob, df_final, n_stim=60, label_name='response prob.', 
+  save_dir=file.path(base_dir, "results", "glmm_response_prob_comparisons.txt")
 )
 
 
-## ---------------------------------------------------------------------------
-## Peak Distance
-## ---------------------------------------------------------------------------
-message("Calculating EMMs for peak distance...")
-
-emm_peak <- get_emm_blocks(m_peak, df_final_sub)
-emm_peak_slopes <- emtrends(m_peak, ~ Genotype | Block, var = "stimulus_log")
-emm_peak_slopes_pairs <- pairs(emm_peak_slopes)
-
-# Between-block comparisons
-emm_peak_between <- get_emm_consecutive_blocks(m_peak, df_final_sub, n_stim = 9)
-emm_peak_between_blocks_slopes <- emtrends(m_peak, ~ Block | Genotype, var = "stimulus_log")
-emm_peak_between_blocks_slopes_pairs <- pairs(emm_peak_between_blocks_slopes)
-
-write_emm_report(
-  model = m_peak,
-  emm_blocks = emm_peak,
-  emm_slopes = emm_peak_slopes,
-  emm_slopes_pairs = emm_peak_slopes_pairs,
-  emm_between = emm_peak_between,
-  emm_between_blocks_slopes = emm_peak_between_blocks_slopes,
-  emm_between_blocks_slopes_pairs = emm_peak_between_blocks_slopes_pairs,
-  outfile = file.path(base_dir, "distance_moved", "glmm_peak_distance_comparisons.txt"),
-  model_name = "GLMM Peak Model"
-)
-
-
-## ---------------------------------------------------------------------------
-## Summed Distance
-## ---------------------------------------------------------------------------
-message("Calculating EMMs for summed distance...")
-
-emm_sum <- get_emm_blocks(m_sum, df_final_sub)
-emm_sum_slopes <- emtrends(m_sum, ~ Genotype | Block, var = "stimulus_log")
-emm_sum_slopes_pairs <- pairs(emm_sum_slopes)
-
-# Between-block comparisons
-emm_sum_between <- get_emm_consecutive_blocks(m_sum, df_final_sub, n_stim = 9)
-emm_sum_between_blocks_slopes <- emtrends(m_sum, ~ Block | Genotype, var = "stimulus_log")
-emm_sum_between_blocks_slopes_pairs <- pairs(emm_sum_between_blocks_slopes)
-
-write_emm_report(
-  model = m_sum,
-  emm_blocks = emm_sum,
-  emm_slopes = emm_sum_slopes,
-  emm_slopes_pairs = emm_sum_slopes_pairs,
-  emm_between = emm_sum_between,
-  emm_between_blocks_slopes = emm_sum_between_blocks_slopes,
-  emm_between_blocks_slopes_pairs = emm_sum_between_blocks_slopes_pairs,
-  outfile = file.path(base_dir, "distance_moved", "glmm_sum_distance_comparisons.txt"),
-  model_name = "GLMM Sum Model"
-)
-
-
-## ---------------------------------------------------------------------------
-## Response Delay
-## ---------------------------------------------------------------------------
-message("Calculating EMMs for response delay...")
-
-emm_delay <- get_emm_blocks(m_delay_poisson, df_final_sub)
-emm_delay_slopes <- emtrends(m_delay_poisson, ~ Genotype | Block, var = "stimulus_log")
-emm_delay_slopes_pairs <- pairs(emm_delay_slopes)
-
-# Between-block comparisons
-emm_delay_between <- get_emm_consecutive_blocks(m_delay_poisson, df_final_sub, n_stim = 9)
-emm_delay_between_blocks_slopes <- emtrends(m_delay_poisson, ~ Block | Genotype, var = "stimulus_log")
-emm_delay_between_blocks_slopes_pairs <- pairs(emm_delay_between_blocks_slopes)
-
-write_emm_report(
-  model = m_delay_poisson,
-  emm_blocks = emm_delay,
-  emm_slopes = emm_delay_slopes,
-  emm_slopes_pairs = emm_delay_slopes_pairs,
-  emm_between = emm_delay_between,
-  emm_between_blocks_slopes = emm_delay_between_blocks_slopes,
-  emm_between_blocks_slopes_pairs = emm_delay_between_blocks_slopes_pairs,
-  outfile = file.path(base_dir, "distance_moved", "glmm_delay_distance_comparisons.txt"),
-  model_name = "GLMM Delay Model"
-)
-
-# ==============================================================================
-# Plot Habituation Curves
-# ==============================================================================
-message("Plotting habituation curves...")
-
-# Peak movement
-g_peak <- plot_habituation(df_final_sub, m_peak,
-                           label = 'Peak distance moved (mm)',
-                           transform = "exp", raw_var = "max_peak")
-g_peak
-save_plot(g_peak,  file.path(base_dir, "figs", "GLMM_peak_distance_habituation_curves"), width=10, height=5, dpi=600)
-
-# Summed distance
-g_sum <- plot_habituation(df_final_sub, m_sum,
-                          label = 'Summed distance moved (mm)',
-                          transform = "exp", raw_var = "max_cumsum")
-g_sum
-save_plot(g_sum,  file.path(base_dir, "figs", "GLMM_summed_distance_habituation_curves"), width=10, height=5, dpi=600)
-
-
-# Response delay
-g_delay <- plot_habituation(df_final_sub, m_delay,
-                            label = 'Response delay (s)',
-                            transform = "none", raw_var = "delay")
-g_delay
-save_plot(g_delay,  file.path(base_dir, "figs", "GLMM_delay_habituation_curves"), width=10, height=5, dpi=600)
-
-# Response prob
-g_prob <- plot_habituation(df_final, m_prob, label='Response prob.', transform = "plogis")
-g_prob
-save_plot(g_prob, file.path(base_dir, "figs", "GLMM_response_prob_habituation_curves"), width=10, height=5, dpi=600)
 
 # ==============================================================================
 # Plot Habituation Curves Separated
@@ -361,7 +286,7 @@ ggsave(
   dpi = 300
 )
 
-# Response delay
+# Response delay - Gaussian Model
 p_delay_by_genotype_block <- plot_habituation_glmm_by_genotype_block(
   df_final = df_final_sub,
   model = m_delay,
@@ -373,8 +298,26 @@ p_delay_by_genotype_block <- plot_habituation_glmm_by_genotype_block(
 print(p_delay_by_genotype_block)
 
 ggsave(
-  filename = file.path(base_dir, "figs", "GLMM_delay_habituation_each_genotype_each_block.png"),
+  filename = file.path(base_dir, "figs", "GLMM_delay_gaussian_habituation_each_genotype_each_block.png"),
   plot = p_delay_by_genotype_block,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+# Response delay - Ordinal Model
+p_delay_ordinal_by_genotype_block <- plot_habituation_clmm_by_genotype_block(
+  df_final = df_final_sub,
+  model = m_delay_ordinal,
+  label = "Response delay (s)",
+  raw_var = "delay",
+  n_points = 100
+)
+
+print(p_delay_ordinal_by_genotype_block)
+ggsave(
+  filename = file.path(base_dir, "figs", "GLMM_delay_ordinal_habituation_each_genotype_each_block.png"),
+  plot = p_delay_ordinal_by_genotype_block,
   width = 14,
   height = 7,
   dpi = 300
@@ -591,3 +534,35 @@ ggsave(
   dpi = 300
 )
 
+
+# ==============================================================================
+# Plot Habituation Curves (OLD)
+# ==============================================================================
+message("Plotting habituation curves...")
+
+# Peak movement
+g_peak <- plot_habituation(df_final_sub, m_peak,
+                           label = 'Peak distance moved (mm)',
+                           transform = "exp", raw_var = "max_peak")
+g_peak
+save_plot(g_peak,  file.path(base_dir, "figs", "GLMM_peak_distance_habituation_curves"), width=10, height=5, dpi=600)
+
+# Summed distance
+g_sum <- plot_habituation(df_final_sub, m_sum,
+                          label = 'Summed distance moved (mm)',
+                          transform = "exp", raw_var = "max_cumsum")
+g_sum
+save_plot(g_sum,  file.path(base_dir, "figs", "GLMM_summed_distance_habituation_curves"), width=10, height=5, dpi=600)
+
+
+# Response delay
+g_delay <- plot_habituation(df_final_sub, m_delay,
+                            label = 'Response delay (s)',
+                            transform = "none", raw_var = "delay")
+g_delay
+save_plot(g_delay,  file.path(base_dir, "figs", "GLMM_delay_habituation_curves"), width=10, height=5, dpi=600)
+
+# Response prob
+g_prob <- plot_habituation(df_final, m_prob, label='Response prob.', transform = "plogis")
+g_prob
+save_plot(g_prob, file.path(base_dir, "figs", "GLMM_response_prob_habituation_curves"), width=10, height=5, dpi=600)
