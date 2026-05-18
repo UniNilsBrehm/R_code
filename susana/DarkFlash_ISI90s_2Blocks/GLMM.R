@@ -139,8 +139,9 @@ m_sum <- glmmTMB(
 )
 
 # --- Model 3: Response Delay (Gaussian GLMM) ----------------------------------
+df_final_sub$delay_non_zero <- df_final_sub$delay + 0.001
 m_delay <- glmmTMB(
-  delay ~ Genotype * stimulus_log * Block + (1 | Video/Well),
+  delay_non_zero ~ Genotype * stimulus_log * Block + (1 | Video/Well),
   family = gaussian(link = "identity"),
   data = df_final_sub
 )

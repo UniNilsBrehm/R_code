@@ -42,6 +42,9 @@ df_resp <- df_final_sub %>%
     
   )
 
+# Check if all values are larger than zero (for Gamma)
+summary(df_resp$max_peak)
+any(df_resp$max_peak <= 0, na.rm = TRUE)
 
 # ==============================================================================
 # The Model
@@ -60,13 +63,15 @@ model_peak <- bf(
 # The Priors
 # ==============================================================================
 priors_peak <- c(
-  set_prior("normal(0, 1.5)", nlpar = "Asym", class = "b"),
-  set_prior("normal(0, 2)",   nlpar = "R0", class = "b"),
+  set_prior("normal(0, 1)", nlpar = "Asym", class = "b"),
+  set_prior("normal(0, 1)", nlpar = "R0", class = "b"),
   set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"),
   
   set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
   set_prior("exponential(2)", nlpar = "R0", class = "sd"),
-  set_prior("exponential(2)", nlpar = "lrc", class = "sd")
+  set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
+  
+  set_prior("exponential(1)", class = "shape")
 )
 
 # ==============================================================================
@@ -76,7 +81,7 @@ priors_peak <- c(
 fit_peak <- brm(
   formula = model_peak,
   data = df_resp,
-  family = bernoulli(link = "logit"),
+  family = Gamma(link = "log"),
   prior = priors_peak,
   backend = "cmdstanr",
   chains = 1,
@@ -91,25 +96,17 @@ fit_peak <- brm(
 fit_peak <- brm(
   formula = model_peak,
   data = df_resp,
-  family = bernoulli(link = "logit"),
+  family = Gamma(link = "log"),
   prior = priors_peak,
-  
   backend = "cmdstanr",
-  
   chains = 4,
   cores = 4,
   threads = threading(4),
-  
   iter = 5000,
   warmup = 1500,
   seed = 42,
-  
-  control = list(
-    adapt_delta = 0.95,
-    max_treedepth = 15
-  )
+  control = list(adapt_delta = 0.95, max_treedepth = 15)
 )
-
 # ==============================================================================
 # Get summary and diagnostics
 # ==============================================================================
@@ -138,7 +135,11 @@ fit_peak <- readRDS(
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-new_resp <- df_resp %>%
+# ==============================================================================
+# Plot peak distance moved curves
+# ==============================================================================
+
+new_peak <- df_resp %>%
   group_by(Genotype, Block) %>%
   summarise(
     stim_min = min(stimulus, na.rm = TRUE),
@@ -155,33 +156,33 @@ new_resp <- df_resp %>%
     Block = factor(Block, levels = levels(df_resp$Block))
   )
 
-pred_resp <- fitted(
+pred_peak <- fitted(
   fit_peak,
-  newdata = new_resp,
+  newdata = new_peak,
   re_formula = NA,
   summary = TRUE
 )
 
-pred_resp_data <- bind_cols(new_resp, as.data.frame(pred_resp)) %>%
+pred_peak_data <- bind_cols(new_peak, as.data.frame(pred_peak)) %>%
   rename(
     fit = Estimate,
     CI_low = Q2.5,
     CI_high = Q97.5
   )
 
-raw_resp <- df_resp %>%
+raw_peak <- df_resp %>%
   group_by(Genotype, Block, stimulus) %>%
   summarise(
-    response_prob = mean(move, na.rm = TRUE),
+    mean_peak = mean(max_peak, na.rm = TRUE),
     .groups = "drop"
   )
 
-p_resp_exp <- ggplot(pred_resp_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
+p_peak_exp <- ggplot(pred_peak_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
   facet_grid(Block ~ Genotype, scales = "fixed") +
   
   geom_point(
-    data = raw_resp,
-    aes(x = stimulus, y = response_prob),
+    data = raw_peak,
+    aes(x = stimulus, y = mean_peak),
     alpha = 0.35,
     size = 1,
     inherit.aes = FALSE
@@ -201,7 +202,7 @@ p_resp_exp <- ggplot(pred_resp_data, aes(x = stimulus, color = Genotype, fill = 
   theme_pubr(base_size = 14) +
   labs(
     x = "Stimulus number within block",
-    y = "Response probability",
+    y = "Peak distance moved",
     color = "Genotype",
     fill = "Genotype"
   ) +
@@ -210,13 +211,13 @@ p_resp_exp <- ggplot(pred_resp_data, aes(x = stimulus, color = Genotype, fill = 
     panel.spacing = unit(1.2, "lines")
   )
 
-print(p_resp_exp)
+print(p_peak_exp)
 
 ggsave(
   filename = file.path(
     base_dir,
     "figs",
-    "response_prob_nlme_habituation_curves.png"
+    "NLME_peak_distance_habituation_curves.png"
   ),
   plot = p_resp_exp,
   width = 14,
@@ -224,14 +225,14 @@ ggsave(
   dpi = 300
 )
 
+# ==============================================================================
+# Plot latent-scale (log-scale) exponential curves WITH raw data
+# ==============================================================================
 
-# ==============================================================================
-# Plot latent-scale (logit-scale) exponential curves WITH raw data
-# ==============================================================================
 # ------------------------------------------------------------------------------
 # 1. Create prediction grid
 # ------------------------------------------------------------------------------
-new_resp_logit <- df_resp %>%
+new_peak_log <- df_resp %>%
   group_by(Genotype, Block) %>%
   summarise(
     stim_min = min(stimulus, na.rm = TRUE),
@@ -249,20 +250,20 @@ new_resp_logit <- df_resp %>%
   )
 
 # ------------------------------------------------------------------------------
-# 2. Get latent-scale predictions
+# 2. Get latent-scale predictions: log(expected max_peak)
 # ------------------------------------------------------------------------------
 
-pred_logit <- fitted(
+pred_log_peak <- fitted(
   fit_peak,
-  newdata = new_resp_logit,
+  newdata = new_peak_log,
   re_formula = NA,
   scale = "linear",
   summary = TRUE
 )
 
-pred_logit_data <- bind_cols(
-  new_resp_logit,
-  as.data.frame(pred_logit)
+pred_log_peak_data <- bind_cols(
+  new_peak_log,
+  as.data.frame(pred_log_peak)
 ) %>%
   rename(
     fit = Estimate,
@@ -271,44 +272,40 @@ pred_logit_data <- bind_cols(
   )
 
 # ------------------------------------------------------------------------------
-# 3. Convert raw probabilities to logit scale
+# 3. Convert raw peak distances to log scale
 # ------------------------------------------------------------------------------
 
-raw_prob <- df_resp %>%
+raw_peak_log <- df_resp %>%
+  filter(max_peak > 0) %>%
   group_by(Genotype, Block, stimulus) %>%
   summarise(
-    response_prob = mean(move, na.rm = TRUE),
+    mean_peak = mean(max_peak, na.rm = TRUE),
+    median_peak = median(max_peak, na.rm = TRUE),
     n = n(),
     .groups = "drop"
   ) %>%
-  
-  # avoid Inf logits
   mutate(
-    response_prob_clipped = pmin(
-      pmax(response_prob, 0.001),
-      0.999
-    ),
-    
-    logit_prob = qlogis(response_prob_clipped)
+    log_mean_peak = log(mean_peak),
+    log_median_peak = log(median_peak)
   )
 
 # ------------------------------------------------------------------------------
 # 4. Plot
 # ------------------------------------------------------------------------------
 
-p_logit <- ggplot(
-  pred_logit_data,
+p_log_peak <- ggplot(
+  pred_log_peak_data,
   aes(x = stimulus, color = Genotype, fill = Genotype)
 ) +
   
   facet_grid(Block ~ Genotype, scales = "fixed") +
   
-  # Raw data points on logit scale
+  # Raw grouped means on log scale
   geom_point(
-    data = raw_prob,
+    data = raw_peak_log,
     aes(
       x = stimulus,
-      y = logit_prob,
+      y = log_mean_peak,
       color = Genotype
     ),
     inherit.aes = FALSE,
@@ -336,8 +333,8 @@ p_logit <- ggplot(
   
   labs(
     x = "Stimulus number within block",
-    y = "Latent response tendency (logit scale)",
-    title = "Bayesian nonlinear habituation curves on latent logit scale",
+    y = "Latent peak distance moved (log scale)",
+    title = "Bayesian nonlinear habituation curves on latent log scale",
     color = "Genotype",
     fill = "Genotype"
   ) +
@@ -347,7 +344,7 @@ p_logit <- ggplot(
     panel.spacing = unit(1.2, "lines")
   )
 
-print(p_logit)
+print(p_log_peak)
 
 ggsave(
   filename = file.path(

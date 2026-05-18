@@ -272,6 +272,7 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
     model,
     newdata = new_data,
     type = "link",
+    # type = predict_type,
     se.fit = TRUE,
     re.form = NA
   )

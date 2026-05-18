@@ -209,7 +209,7 @@ ggsave(
 
 
 # ==============================================================================
-# Plot latent-scale (logit-scale) exponential curves WITH raw data
+# Plot latent-scale (logit-scale) exponential curves
 # ==============================================================================
 # ------------------------------------------------------------------------------
 # 1. Create prediction grid
@@ -337,6 +337,240 @@ ggsave(
     base_dir,
     "figs",
     "response_prob_nlme_habituation_curves_logit_scale_with_raw.png"
+  ),
+  plot = p_logit,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+# ==============================================================================
+# Plot Habituation curves WITH true raw binary data
+# ==============================================================================
+
+new_resp <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Genotype, Block) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 100)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype = factor(
+      Genotype,
+      levels = levels(df_resp$Genotype)
+    ),
+    Block = factor(
+      Block,
+      levels = levels(df_resp$Block)
+    )
+  )
+
+# ------------------------------------------------------------------------------
+# Get fitted response-scale predictions
+# ------------------------------------------------------------------------------
+
+pred_resp <- fitted(
+  fit_resp_exp,
+  newdata = new_resp,
+  re_formula = NA,
+  summary = TRUE
+)
+
+pred_resp_data <- bind_cols(
+  new_resp,
+  as.data.frame(pred_resp)
+) %>%
+  rename(
+    fit = Estimate,
+    CI_low = Q2.5,
+    CI_high = Q97.5
+  )
+
+# ------------------------------------------------------------------------------
+# Plot
+# ------------------------------------------------------------------------------
+
+p_resp_exp <- ggplot(
+  pred_resp_data,
+  aes(
+    x = stimulus,
+    color = Genotype,
+    fill = Genotype
+  )
+) +
+  
+  facet_grid(
+    Block ~ Genotype,
+    scales = "fixed"
+  ) +
+  
+  # TRUE raw Bernoulli observations
+  geom_jitter(
+    data = df_resp,
+    aes(
+      x = stimulus,
+      y = move,
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    width = 0.15,
+    height = 0.03,
+    alpha = 0.12,
+    size = 0.7
+  ) +
+  
+  # Credible interval
+  geom_ribbon(
+    aes(
+      ymin = CI_low,
+      ymax = CI_high
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  
+  # Model fit
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
+  ) +
+  
+  theme_pubr(base_size = 14) +
+  
+  labs(
+    x = "Stimulus number within block",
+    y = "Response probability",
+    color = "Genotype",
+    fill = "Genotype"
+  ) +
+  
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
+  )
+
+print(p_resp_exp)
+
+ggsave(
+  filename = file.path(
+    base_dir,
+    "figs",
+    "response_prob_nlme_habituation_curves_true_raw_data.png"
+  ),
+  plot = p_resp_exp,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+# ==============================================================================
+# Plot latent-scale (logit-scale) exponential curves WITH true raw binary data
+# ==============================================================================
+
+new_resp_logit <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Genotype, Block) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 200)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block = factor(Block, levels = levels(df_resp$Block))
+  )
+
+pred_logit <- fitted(
+  fit_resp_exp,ö
+  newdata = new_resp_logit,
+  re_formula = NA,
+  scale = "linear",
+  summary = TRUE
+)
+
+pred_logit_data <- bind_cols(
+  new_resp_logit,
+  as.data.frame(pred_logit)
+) %>%
+  rename(
+    fit = Estimate,
+    CI_low = Q2.5,
+    CI_high = Q97.5
+  )
+
+# place true binary observations at finite logit reference values
+raw_binary_logit <- df_resp %>%
+  mutate(
+    logit_binary_display = ifelse(move == 1, 4, -4)
+  )
+
+p_logit <- ggplot(
+  pred_logit_data,
+  aes(x = stimulus, color = Genotype, fill = Genotype)
+) +
+  
+  facet_grid(Block ~ Genotype, scales = "fixed") +
+  
+  geom_jitter(
+    data = raw_binary_logit,
+    aes(
+      x = stimulus,
+      y = logit_binary_display,
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    width = 0.15,
+    height = 0.15,
+    alpha = 0.12,
+    size = 0.7
+  ) +
+  
+  geom_ribbon(
+    aes(
+      ymin = CI_low,
+      ymax = CI_high
+    ),
+    alpha = 0.15,
+    color = NA
+  ) +
+  
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
+  ) +
+  
+  theme_pubr(base_size = 14) +
+  
+  labs(
+    x = "Stimulus number within block",
+    y = "Latent response tendency (logit scale)",
+    title = "Bayesian nonlinear habituation curves on latent logit scale",
+    color = "Genotype",
+    fill = "Genotype"
+  ) +
+  
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
+  )
+
+print(p_logit)
+
+ggsave(
+  filename = file.path(
+    base_dir,
+    "figs",
+    "response_prob_nlme_habituation_curves_logit_scale_true_raw_binary.png"
   ),
   plot = p_logit,
   width = 14,
