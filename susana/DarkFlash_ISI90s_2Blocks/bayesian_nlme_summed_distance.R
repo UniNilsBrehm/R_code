@@ -11,13 +11,17 @@ library(cmdstanr)
 library(tidybayes)
 library(posterior)
 library(loo)
+library(DHARMa)
+library(bayesplot)
 
-
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
 # source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+source("D:/Behavior_Data/R_code/susana/utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+
 file_dir <- file.path(
   base_dir,
   "data_files",
@@ -25,6 +29,7 @@ file_dir <- file.path(
 )
 
 var_name = 'summed_distance'
+col_name = 'max_cumsum'
 
 # ==============================================================================
 # Load and prepare data
@@ -47,14 +52,14 @@ df_resp <- df_final_sub %>%
   )
 
 # Check if all values are larger than zero (for Gamma)
-summary(df_resp$max_peak)
-any(df_resp$max_peak <= 0, na.rm = TRUE)
+summary(df_resp[[col_name]])
+any(df_resp[[col_name]] <= 0, na.rm = TRUE)
 
 # ==============================================================================
 # The Model
 # ==============================================================================
 model <- bf(
-  max_cumsum ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0),
+  as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
   
   Asym ~ Genotype * Block + (1 | animal),
   R0   ~ Genotype * Block + (1 | animal),
@@ -66,24 +71,109 @@ model <- bf(
 # ==============================================================================
 # The Priors
 # ==============================================================================
-priors<- c(
-  # Population-level nonlinear parameters
-  # log-scale because family = Gamma(link = "log")
-  set_prior("normal(1.6, 0.5)", nlpar = "Asym", class = "b"),
-  set_prior("normal(2.2, 0.5)", nlpar = "R0",   class = "b"),
+priors <- c(
+  # Fixed Effects (Shifted mean to 1.25 to center near data median)
+  set_prior("normal(1.25, 1)", nlpar = "Asym", class = "b"),
+  set_prior("normal(1.25, 1)", nlpar = "R0", class = "b"),
+  set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"), # Keeps your gradual decay
   
-  # Habituation rate: exp(lrc)
-  # lrc around -2.5 means rate ≈ 0.08 per stimulus
-  set_prior("normal(-2.5, 0.5)", nlpar = "lrc", class = "b"),
+  # Random Effects (Slightly restricted to prevent extreme animal-level explosions)
+  set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
+  set_prior("exponential(2)", nlpar = "R0", class = "sd"),
+  set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
   
-  # Animal-level variation
-  set_prior("exponential(5)", nlpar = "Asym", class = "sd"),
-  set_prior("exponential(5)", nlpar = "R0",   class = "sd"),
-  set_prior("exponential(5)", nlpar = "lrc",  class = "sd"),
-  
-  # Gamma shape
+  # Shape parameter for Gamma variance
   set_prior("exponential(1)", class = "shape")
+  
 )
+# ==============================================================================
+# Validate Priors
+# ==============================================================================
+fit_prior_only <- brm(
+  formula = model,
+  data = df_resp,
+  family = Gamma(link = "log"),
+  prior = priors,
+  backend = "cmdstanr",
+  chains = 4,
+  cores = 4,
+  iter = 2000,          
+  warmup = 1000,
+  seed = 42,
+  sample_prior = "only" 
+)
+
+# Prior predictive check for Gamma response
+yrep_prior <- posterior_predict(fit_prior_only, ndraws = 50)
+
+ppc_dens_overlay(
+  y = df_resp[[col_name]],
+  yrep = yrep_prior
+) +
+  scale_x_log10() +
+  ggtitle("Prior Predictive Check: Density Overlay")
+
+# Analytically Prior Validation (Logit Scale Simulation)
+# ==============================================================================
+rm(list = intersect(c("sim_asym", "sim_r0", "sim_lrc", "sim_k"), ls()))
+
+set.seed(42)
+
+# Match your current priors
+sim_asym <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
+sim_r0   <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
+
+# lrc is still log-rate; k = exp(lrc)
+sim_lrc <- rnorm(10000, mean = -1.5, sd = 1.0)
+sim_k   <- exp(sim_lrc)
+
+print("Prior response-scale quantiles for Asym:")
+quantile(sim_asym, probs = c(0.025, 0.5, 0.975))
+
+print("Prior response-scale quantiles for R0:")
+quantile(sim_r0, probs = c(0.025, 0.5, 0.975))
+
+print("Prior habituation-rate quantiles for k = exp(lrc):")
+quantile(sim_k, probs = c(0.025, 0.5, 0.975))
+
+print("Prior half-life quantiles, log(2) / k:")
+quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975))
+
+# ==============================================================================
+# Fit Fast Test Model
+# ==============================================================================
+# Step 1: Create a tiny xx% subset of your data for rapid prototyping
+df_test_sub <- df_resp %>% 
+  group_by(Genotype, Block) %>% 
+  slice_sample(prop = 0.75) %>% 
+  ungroup()
+
+# Step 2: Fit using Meanfield Variational Inference (VI)
+fit_vi_test <- brm(
+  formula = model,
+  data = df_test_sub ,
+  family = Gamma(link = "log"),
+  prior = priors,
+  backend = "cmdstanr",
+  algorithm = "meanfield",          # <--- Reliable, fast VI method
+  iter = 10000                      # VI likes higher iterations (it's still lightning fast)
+)
+
+fit_model <- fit_vi_test
+
+# # COMPARE TWO MODELS
+# # 1. Compute LOO for both models
+# loo_1 <- loo(fit_1, cores = 4)
+# loo_2    <- loo(fit_2, cores = 4)
+# 
+# # 2. Compare them
+# loo_compare(loo_1, loo_2)
+# 
+# # WAIC
+# waic_1 <- waic(fit_1)
+# waic_2    <- waic(fit_2)
+# 
+# loo_compare(waic_1, waic_2)
 
 # ==============================================================================
 # Fit the model
@@ -93,14 +183,230 @@ fit_model <- brm(
   data = df_resp,
   family = Gamma(link = "log"),
   prior = priors,
+  
   backend = "cmdstanr",
+  
   chains = 4,
   cores = 4,
-  threads = threading(4),
+  threads = threading(6),
+  
   iter = 5000,
-  warmup = 1500,
+  warmup = 2000,
   seed = 42,
-  control = list(adapt_delta = 0.95, max_treedepth = 15)
+  
+  control = list(
+    adapt_delta = 0.99,
+    max_treedepth = 15
+  )
+)
+
+# ==============================================================================
+# Get summary and diagnostics
+# ==============================================================================
+summary(fit_model)
+
+diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
+
+# Trace plots
+trace_plots <- plot(fit_model, ask = FALSE)
+for (i in seq_along(trace_plots)) {
+  ggsave(
+    filename = file.path(
+      diag_dir,
+      paste0("nlme_", var_name, "_traceplot_", i, ".png")
+    ),
+    plot = trace_plots[[i]],
+    width = 12,
+    height = 8,
+    dpi = 300
+  )
+}
+
+# Posterior predictive checks
+p1 <- pp_check(fit_model, ndraws = 100)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
+  p1,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p2 <- pp_check(
+  fit_model,
+  type = "dens_overlay",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_densed_overlay.png")),
+  p2,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p3 <- pp_check(
+  fit_model,
+  type = "hist",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir,paste0("nlme_", var_name,"hist.png")),
+  p3,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+p4 <- pp_check(
+  fit_model,
+  type = "ecdf_overlay",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_ecdf.png")),
+  p4,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+
+p5 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "stimulus0",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_stimulus.png")),
+  p5,
+  width = 12,
+  height = 8,
+  dpi = 300
+)
+
+
+p6 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "Genotype",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_genotype.png")),
+  p6,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+p7 <- pp_check(
+  fit_model,
+  type = "stat_grouped",
+  group = "Block",
+  ndraws = 100
+)
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_block.png")),
+  p7,
+  width = 10,
+  height = 8,
+  dpi = 300
+)
+
+# Check the correlations between the main non-linear parameters
+# identifiability of nonlinear parameters
+save_plot_as_png(
+  paste0("nlme_", var_name, "_pairs_plot.png"),
+  quote(
+    pairs(
+      fit_model,
+      variable = c(
+        "b_Asym_Intercept",
+        "b_R0_Intercept",
+        "b_lrc_Intercept"
+      )
+    )
+  ),
+  width = 2200,
+  height = 2200
+)
+
+# Residuals
+yrep <- posterior_predict(fit_model, ndraws = 200)
+
+sim_res <- createDHARMa(
+  simulatedResponse = t(yrep),
+  observedResponse = df_resp$max_peak,
+  fittedPredictedResponse = fitted(fit_model)[, "Estimate"]
+)
+
+save_plot_as_png(
+  paste0("nlme_", var_name, "_DHARMa_residuals.png"),
+  quote(plot(sim_res))
+)
+
+# Compute leave-one-out cross-validation:
+loo_var <- loo(fit_model)
+print(loo_var)
+save_plot_as_png(
+  paste0("nlme_", var_name, "_loo_plot.png"),
+  quote(plot(loo_var))
+)
+# loo_compare(loo1, loo2)  # compare models
+
+# Random effects
+re_df <- ranef(fit_model)$animal
+
+re_long <- bind_rows(
+  as.data.frame(re_df[, , "Asym_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "Asym"),
+  as.data.frame(re_df[, , "R0_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "R0"),
+  as.data.frame(re_df[, , "lrc_Intercept"]) %>%
+    mutate(animal = rownames(re_df), nlpar = "lrc")
+)
+
+p_re <- ggplot(re_long,
+               aes(x = reorder(animal, Estimate),
+                   y = Estimate)) +
+  geom_point() +
+  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5),
+                width = 0) +
+  coord_flip() +
+  facet_wrap(~nlpar, scales = "free_x") +
+  theme_bw() +
+  labs(x = "Animal", y = "Random effect estimate")
+
+ggsave(
+  file.path(diag_dir, paste0("nlme_", var_name, "_random_effects.png")),
+  p_re,
+  width = 12,
+  height = 10,
+  dpi = 300
+)
+
+# Conditional effects plots
+ce <- conditional_effects(
+  fit_model,
+  effects = "stimulus0:Genotype",
+  re_formula = NA
+)
+save_plot_as_png(
+  paste0("nlme_", var_name, "_conditional_effects.png"),
+  quote(plot(ce)),
+  width = 2200,
+  height = 1800
 )
 
 # ==============================================================================

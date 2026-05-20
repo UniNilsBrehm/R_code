@@ -33,17 +33,19 @@ library(performance)  # Model diagnostics (AIC, R², etc.)
 library(ggpubr)       # Publication-ready plots
 library(ordinal)
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+# source("D:/Behavior_Data/R_code/susana/utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+
 file_dir <- file.path(
   base_dir,
   "data_files",
   "SPZ_ISI60_removed_non_responders_2stimuli.csv"
 )
-
 # ==============================================================================
 # Load Data
 # ==============================================================================

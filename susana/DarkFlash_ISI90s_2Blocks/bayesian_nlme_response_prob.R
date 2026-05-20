@@ -12,12 +12,16 @@ library(tidybayes)
 library(posterior)
 library(loo)
 library(DHARMa)
+library(bayesplot)
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/utils.R")
+# source("D:/Behavior_Data/R_code/susana/utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+
 file_dir <- file.path(
   base_dir,
   "data_files",
@@ -25,6 +29,10 @@ file_dir <- file.path(
 )
 
 var_name = 'response_prob'
+col_name = 'move'
+
+save_fig_dir = file.path(base_dir, "figs", "nlme", var_name)
+save_results_dir = file.path(base_dir, "results", "nlme", var_name)
 
 # ==============================================================================
 # Load and prepare data
@@ -50,27 +58,155 @@ df_resp <- df_final %>%
 # The Model
 # ==============================================================================
 model <- bf(
-  move ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0),
+  as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
   
   Asym ~ Genotype * Block + (1 | animal),
   R0   ~ Genotype * Block + (1 | animal),
   lrc  ~ Genotype * Block + (1 | animal),
+
+  nl = TRUE
+)
+
+# Directly on prob scale
+model <- bf(
+  # R0 (dp0) must be larger than Asymptote (pinf)
+  move ~ inv_logit(pinf) +
+    (1 - inv_logit(pinf)) * inv_logit(dp0) * exp(-exp(lk) * stimulus0),
+  
+  # More general version: But can produce rising curves
+  # move ~ inv_logit(p_inf_raw) + (inv_logit(p0_raw) - inv_logit(p_inf_raw)) * exp(-exp(lk) * stimulus0),
+  
+  # inv_logit(pinf) keeps the asymptote between 0 and 1.
+  # inv_logit(dp0) keeps the starting offset fraction between 0 and 1.
+  # exp(lk) keeps the decay rate positive.
+  # Gurantees: 0≤p(move=1)≤1
+  
+  pinf ~ Genotype * Block + (1 | animal),  # on logit scale, transform with inv_logit(pinf)
+  dp0  ~ Genotype * Block + (1 | animal),  # on logit scale, fraction of the remaining distance from the asymptote to 1.
+  lk   ~ Genotype * Block + (1 | animal),  # log rate (k=exp(lk))
   
   nl = TRUE
 )
+
+
 
 # ==============================================================================
 # The Priors
 # ==============================================================================
 priors <- c(
-  set_prior("normal(0, 1.5)", nlpar = "Asym", class = "b"),
-  set_prior("normal(0, 2)",   nlpar = "R0", class = "b"),
-  set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"),
+  # Shifted to center around a ~75% baseline response probability
+  set_prior("normal(1.1, 1.0)", nlpar = "Asym", class = "b"),
+  set_prior("normal(1.1, 1.0)",  nlpar = "R0", class = "b"),
+  set_prior("normal(-1.5, 1)",  nlpar = "lrc", class = "b"), # Rate parameter stays the same
   
+  # Group-level variations
   set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
   set_prior("exponential(2)", nlpar = "R0", class = "sd"),
   set_prior("exponential(2)", nlpar = "lrc", class = "sd")
 )
+
+# Directly on prob scale
+priors <- c(
+  # pinf: asymptotic/lower probability
+  # inv_logit(0) = 0.50
+  set_prior("normal(0, 1)", nlpar = "pinf", class = "b"),
+  
+  # dp0: fraction of remaining distance from pinf to 1
+  # inv_logit(1.4) ≈ 0.80
+  set_prior("normal(1.4, 1)", nlpar = "dp0", class = "b"),
+  
+  # lk: log rate
+  # exp(-1.5) ≈ 0.22
+  set_prior("normal(-1.5, 1)", nlpar = "lk", class = "b"),
+  
+  # animal-level variation
+  set_prior("exponential(2)", nlpar = "pinf", class = "sd"),
+  set_prior("exponential(2)", nlpar = "dp0", class = "sd"),
+  set_prior("exponential(2)", nlpar = "lk", class = "sd")
+)
+
+# ==============================================================================
+# Validate Priors
+# ==============================================================================
+fit_prior_only <- brm(
+  formula = model,
+  data = df_resp,
+  family = bernoulli(link = "logit"),
+  prior = priors,
+  backend = "cmdstanr",
+  chains = 4,
+  cores = 4,
+  iter = 2000,          
+  warmup = 1000,
+  seed = 42,
+  sample_prior = "only" 
+)
+
+# 2. Visual Prior Predictive Checks for Binary Data
+# BAR PLOT instead of Density: Compares the counts of 0s and 1s
+ppc_bars(
+  y = df_resp[[col_name]], 
+  yrep = posterior_predict(fit_prior_only, ndraws = 50)
+) + 
+  ggtitle("Prior Predictive Check: Counts of 0s and 1s")
+
+# PROPORTION STAT instead of Mean/Max: Checks if the predicted probability 
+# of a response (y = 1) matches reality.
+# We define a custom function to calculate the mean (which equals the proportion of 1s)
+prop_one <- function(x) mean(x == 1)
+
+ppc_stat(
+  y = df_resp[[col_name]], 
+  yrep = posterior_predict(fit_prior_only, ndraws = 200), 
+  stat = "prop_one"
+) +
+  ggtitle("Prior Predictive Check: Proportion of Responses (1s)")
+
+# 3. Analytically Prior Validation (Logit Scale Simulation)
+# Clear the old simulations just to be safe
+rm(sim_asym, sim_r0)
+
+# Simulate 10,000 draws using the updated priors: normal(1.1, 1.0)
+sim_asym <- plogis(rnorm(10000, mean = 1.1, sd = 1.0))
+sim_r0   <- plogis(rnorm(10000, mean = 1.1, sd = 1.0))
+
+# Check the new probability quantiles
+print("UPDATED Prior Probability Quantiles for Asym (0.025, 0.5, 0.975):")
+quantile(sim_asym, probs = c(0.025, 0.5, 0.975))
+
+print("UPDATED Prior Probability Quantiles for R0 (0.025, 0.5, 0.975):")
+quantile(sim_r0, probs = c(0.025, 0.5, 0.975))
+
+
+# 4. Diagnostic & Effect Plots
+# MCMC density plot of the prior distributions
+mcmc_plot(fit_prior_only, type = "dens")
+
+# Plot the conditional effects implied ONLY by your priors
+plot(conditional_effects(fit_prior_only))
+
+# ==============================================================================
+# Fit Fast Test Model
+# ==============================================================================
+# Step 1: Create a tiny xx% subset of your data for rapid prototyping
+df_test_sub <- df_resp %>% 
+  group_by(Genotype, Block) %>% 
+  slice_sample(prop = 0.90) %>% 
+  ungroup()
+
+# Step 2: Fit using Meanfield Variational Inference (VI)
+fit_vi_test <- brm(
+  formula = model,
+  data = df_test_sub,               # Using the xx% subset
+  # family = bernoulli(link = "logit"),
+  family = bernoulli(link = "identity"),
+  prior = priors,
+  backend = "cmdstanr",
+  algorithm = "meanfield",          # <--- Reliable, fast VI method
+  iter = 10000                      # VI likes higher iterations (it's still lightning fast)
+)
+
+fit_model <- fit_vi_test
 
 # ==============================================================================
 # Fit the model
@@ -80,29 +216,57 @@ fit_model <- brm(
   data = df_resp,
   family = bernoulli(link = "logit"),
   prior = priors,
-  
   backend = "cmdstanr",
-  
   chains = 4,
   cores = 4,
-  threads = threading(4),
-  
+  threads = threading(6),
   iter = 5000,
   warmup = 1500,
   seed = 42,
-  
-  control = list(
-    adapt_delta = 0.99,
-    max_treedepth = 15
-  )
+  control = list(adapt_delta = 0.90, max_treedepth = 10)
+)
+
+# directly on prob scale
+fit <- brm(
+  formula = model,
+  data = df_resp,
+  family = bernoulli(link = "identity"),
+  prior = priors_prob,
+  backend = "cmdstanr",
+  chains = 4,
+  cores = 4,
+  threads = threading(6),
+  iter = 5000,
+  warmup = 1500,
+  seed = 42,
+  control = list(adapt_delta = 0.95, max_treedepth = 12)
+)
+
+# ==============================================================================
+# Save fitted model to HDD
+# ==============================================================================
+saveRDS(
+  fit_model,
+  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
+)
+
+# ==============================================================================
+# Load fitted model if available
+# ==============================================================================
+fit_model <- readRDS(
+  file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
 )
 
 # ==============================================================================
 # Get summary and diagnostics
 # ==============================================================================
+sink(file.path(save_results_dir, paste0(var_name, '_model_summary.txt')))
 summary(fit_model)
+sink()
 
-diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
+diag_dir <- file.path(base_dir, "models", "diagnostics", "nlme", var_name)
+
+bayes_R2(fit_model)
 
 # Trace plots
 trace_plots <- plot(fit_model, ask = FALSE)
@@ -121,7 +285,6 @@ for (i in seq_along(trace_plots)) {
 
 # Posterior predictive checks
 p1 <- pp_check(fit_model, ndraws = 100)
-
 ggsave(
   file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
   p1,
@@ -256,12 +419,15 @@ save_plot_as_png(
 )
 
 # Compute leave-one-out cross-validation:
-loo_sum <- loo(fit_model)
+loo_sum <- loo(fit_model, cores=4)
 print(loo_sum)
 save_plot_as_png(
   paste0("nlme_", var_name, "_loo_plot.png"),
   quote(plot(loo_sum))
 )
+
+# fit_model 1: with corr
+# fit_model 2: no corr
 # loo_compare(loo1, loo2)  # compare models
 
 # Random effects
@@ -302,27 +468,14 @@ ce <- conditional_effects(
   effects = "stimulus0:Genotype",
   re_formula = NA
 )
+
 save_plot_as_png(
   paste0("nlme_", var_name, "_conditional_effects.png"),
   quote(plot(ce)),
   width = 2200,
   height = 1800
-)rs(fit_model, variable = c("b_Asym_Intercept", "b_R0_Intercept", "b_lrc_Intercept"))
-
-# ==============================================================================
-# Save fitted model to HDD
-# ==============================================================================
-saveRDS(
-  fit_model,
-  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
 )
 
-# ==============================================================================
-# Load fitted model if available
-# ==============================================================================
-fit_model <- readRDS(
-  file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
-)
 
 # ==============================================================================
 # Plot Habituation curves
@@ -402,11 +555,7 @@ p_resp_exp <- ggplot(pred_resp_data, aes(x = stimulus, color = Genotype, fill = 
 print(p_resp_exp)
 
 ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves.png")
-  ),
+  filename = file.path(save_fig_dir, paste0("nlme_", var_name, "_habituation_curves.png")),
   plot = p_resp_exp,
   width = 14,
   height = 7,
@@ -540,8 +689,7 @@ print(p_logit)
 
 ggsave(
   filename = file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_habituation_curves_logit_scale_with_raw.png")
   ),
   plot = p_logit,
@@ -665,8 +813,7 @@ print(p_resp_exp)
 
 ggsave(
   filename = file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_habituation_curves_true_raw_data.png")
   ),
   plot = p_resp_exp,
@@ -774,8 +921,7 @@ print(p_logit)
 
 ggsave(
   filename = file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_habituation_curves_logit_scale_true_raw_binary.png")
   ),
   plot = p_logit,
@@ -891,6 +1037,16 @@ comparison_summary <- comparison_df %>%
     prob_Genotype_1_faster = mean(k_1 > k_2),
     prob_Genotype_2_faster = mean(k_1 < k_2),
     
+    ROPE_prob_10percent = mean(abs(log(k_ratio)) < log(1.10)),
+    
+    evidence_strength = case_when(
+      prob_Genotype_1_faster > 0.995 ~ "extreme",
+      prob_Genotype_1_faster > 0.97  ~ "very strong",
+      prob_Genotype_1_faster > 0.90  ~ "strong",
+      prob_Genotype_1_faster > 0.75  ~ "moderate",
+      TRUE ~ "weak"
+    ),
+    
     .groups = "drop"
   )
 
@@ -899,8 +1055,7 @@ print(comparison_summary)
 write.csv(
   comparison_summary,
   file.path(
-    base_dir,
-    "results",
+    save_results_dir,
     paste0("nlme_", var_name, "_habituation_rate_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
@@ -933,8 +1088,7 @@ print(p_k)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_habituation_rate_posteriors.png")
   ),
   p_k,
@@ -978,8 +1132,7 @@ print(p_compare)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_habituation_rate_all_pairwise_ratios.png")
   ),
   p_compare,
@@ -1055,11 +1208,25 @@ asym_comparison_df <- asym_draws_df %>%
 asym_comparison_summary <- asym_comparison_df %>%
   group_by(Block, Genotype_1, Genotype_2, comparison) %>%
   summarise(
+    
     median_difference = median(Asym_difference),
     diff_low = quantile(Asym_difference, 0.025),
     diff_high = quantile(Asym_difference, 0.975),
+    
     prob_Genotype_1_higher = mean(Asym_1 > Asym_2),
     prob_Genotype_2_higher = mean(Asym_1 < Asym_2),
+    
+    # ROPE on logit scale
+    ROPE_prob_small_effect = mean(abs(Asym_difference) < 0.2),
+    
+    evidence_strength = case_when(
+      prob_Genotype_1_higher > 0.995 ~ "extreme",
+      prob_Genotype_1_higher > 0.97  ~ "very strong",
+      prob_Genotype_1_higher > 0.90  ~ "strong",
+      prob_Genotype_1_higher > 0.75  ~ "moderate",
+      TRUE ~ "weak"
+    ),
+    
     .groups = "drop"
   )
 
@@ -1068,8 +1235,7 @@ print(asym_comparison_summary)
 write.csv(
   asym_comparison_summary,
   file.path(
-    base_dir,
-    "results",
+    save_results_dir,
     paste0("nlme_", var_name, "_Asym_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
@@ -1096,8 +1262,7 @@ print(p_asym)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_Asym_posteriors.png")
   ),
   p_asym,
@@ -1136,8 +1301,7 @@ print(p_asym_compare)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_Asym_all_pairwise_differences.png")
   ),
   p_asym_compare,
@@ -1213,21 +1377,33 @@ r0_comparison_df <- r0_draws_df %>%
 r0_comparison_summary <- r0_comparison_df %>%
   group_by(Block, Genotype_1, Genotype_2, comparison) %>%
   summarise(
+    
     median_difference = median(R0_difference),
     diff_low = quantile(R0_difference, 0.025),
     diff_high = quantile(R0_difference, 0.975),
+    
     prob_Genotype_1_higher = mean(R0_1 > R0_2),
     prob_Genotype_2_higher = mean(R0_1 < R0_2),
+    
+    # ROPE on logit scale
+    ROPE_prob_small_effect = mean(abs(R0_difference) < 0.2),
+    
+    evidence_strength = case_when(
+      prob_Genotype_1_higher > 0.995 ~ "extreme",
+      prob_Genotype_1_higher > 0.97  ~ "very strong",
+      prob_Genotype_1_higher > 0.90  ~ "strong",
+      prob_Genotype_1_higher > 0.75  ~ "moderate",
+      TRUE ~ "weak"
+    ),
+    
     .groups = "drop"
   )
-
 print(r0_comparison_summary)
 
 write.csv(
   r0_comparison_summary,
   file.path(
-    base_dir,
-    "results",
+    save_results_dir,
     paste0("nlme_", var_name, "_R0_all_pairwise_comparisons.csv")
   ),
   row.names = FALSE
@@ -1255,8 +1431,7 @@ print(p_r0)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_R0_posteriors.png")
   ),
   p_r0,
@@ -1295,8 +1470,7 @@ print(p_r0_compare)
 
 ggsave(
   file.path(
-    base_dir,
-    "figs",
+    save_fig_dir,
     paste0("nlme_", var_name, "_R0_all_pairwise_differences.png")
   ),
   p_r0_compare,

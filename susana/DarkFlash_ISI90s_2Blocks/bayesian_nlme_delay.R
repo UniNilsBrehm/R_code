@@ -28,8 +28,8 @@ file_dir <- file.path(
   "SPZ_ISI60_removed_non_responders_2stimuli.csv"
 )
 
-var_name = 'peak_distance'
-col_name = 'max_peak'
+var_name = 'delay'
+col_name = 'delay'
 
 # ==============================================================================
 # Load and prepare data
@@ -47,44 +47,43 @@ df_resp <- df_final_sub %>%
     Genotype = factor(Genotype),
     Video = factor(Video),
     Well = factor(Well),
+    delay = ordered(delay, levels = c(0, 1, 2, 3, 4)),
     animal = interaction(Video, Well, drop = TRUE)
-    
   )
 
-# Check if all values are larger than zero (for Gamma)
+# Check ordinal delay distribution
 summary(df_resp[[col_name]])
-any(df_resp[[col_name]] <= 0, na.rm = TRUE)
+table(df_resp[[col_name]], useNA = "ifany")
+is.ordered(df_resp[[col_name]])
 
 # ==============================================================================
 # The Model
 # ==============================================================================
-model <- bf(
-  as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
-  
-  Asym ~ Genotype * Block + (1 | animal),
-  R0   ~ Genotype * Block + (1 | animal),
-  lrc  ~ Genotype * Block + (1 | animal),
-  
-  nl = TRUE
-)
+  model <- bf(
+    as.formula(
+      paste0(
+        col_name,
+        " ~ R0 + (4 - R0) * stimulus0 / (exp(logK) + stimulus0)"
+      )
+    ),
+    
+    R0   ~ Genotype * Block + (1 | animal),
+    logK ~ Genotype * Block + (1 | animal),
+    
+    nl = TRUE
+  )
 
 # ==============================================================================
 # The Priors
 # ==============================================================================
 priors <- c(
-  # Fixed Effects (Shifted mean to 1.25 to center near data median)
-  set_prior("normal(1.25, 1)", nlpar = "Asym", class = "b"),
-  set_prior("normal(1.25, 1)", nlpar = "R0", class = "b"),
-  set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"), # Keeps your gradual decay
+  set_prior("normal(0, 1)", class = "b", nlpar = "R0"),
+  set_prior("normal(log(3), 0.7)", class = "b", nlpar = "logK"),
   
-  # Random Effects (Slightly restricted to prevent extreme animal-level explosions)
-  set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
-  set_prior("exponential(2)", nlpar = "R0", class = "sd"),
-  set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
+  set_prior("exponential(2)", class = "sd", nlpar = "R0"),
+  set_prior("exponential(2)", class = "sd", nlpar = "logK"),
   
-  # Shape parameter for Gamma variance
-  set_prior("exponential(1)", class = "shape")
-  
+  set_prior("normal(0, 2)", class = "Intercept")
 )
 
 # ==============================================================================
@@ -93,7 +92,7 @@ priors <- c(
 fit_prior_only <- brm(
   formula = model,
   data = df_resp,
-  family = Gamma(link = "log"),
+  family = cumulative(link = "logit"),
   prior = priors,
   backend = "cmdstanr",
   chains = 4,
@@ -104,34 +103,38 @@ fit_prior_only <- brm(
   sample_prior = "only" 
 )
 
-# Prior predictive check for Gamma response
+# Prior predictive check for ordinal delay response
+# ==============================================================================
 yrep_prior <- posterior_predict(fit_prior_only, ndraws = 50)
 
-ppc_dens_overlay(
-  y = df_resp[[col_name]],
+# Make observed response numeric 0–4 for bayesplot
+y_delay <- as.numeric(as.character(df_resp[[col_name]]))
+
+ppc_bars(
+  y = y_delay,
   yrep = yrep_prior
 ) +
-  scale_x_log10() +
-  ggtitle("Prior Predictive Check: Density Overlay")
+  ggtitle("Prior Predictive Check: Ordinal Delay")
 
-# Analytically Prior Validation (Logit Scale Simulation)
+# Analytical prior validation for ordinal nonlinear delay model
 # ==============================================================================
+
 rm(list = intersect(c("sim_asym", "sim_r0", "sim_lrc", "sim_k"), ls()))
 
 set.seed(42)
 
-# Match your current priors
-sim_asym <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
-sim_r0   <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
+# Match priors for latent-scale nonlinear parameters
+sim_asym <- rnorm(10000, mean = 0, sd = 1)
+sim_r0   <- rnorm(10000, mean = 0, sd = 1)
 
-# lrc is still log-rate; k = exp(lrc)
-sim_lrc <- rnorm(10000, mean = -1.5, sd = 1.0)
+# lrc is log-rate; k = exp(lrc)
+sim_lrc <- rnorm(10000, mean = -1.5, sd = 1)
 sim_k   <- exp(sim_lrc)
 
-print("Prior response-scale quantiles for Asym:")
+print("Prior latent-scale quantiles for Asym:")
 quantile(sim_asym, probs = c(0.025, 0.5, 0.975))
 
-print("Prior response-scale quantiles for R0:")
+print("Prior latent-scale quantiles for R0:")
 quantile(sim_r0, probs = c(0.025, 0.5, 0.975))
 
 print("Prior habituation-rate quantiles for k = exp(lrc):")
@@ -146,14 +149,14 @@ quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975))
 # Step 1: Create a tiny xx% subset of your data for rapid prototyping
 df_test_sub <- df_resp %>% 
   group_by(Genotype, Block) %>% 
-  slice_sample(prop = 0.75) %>% 
+  slice_sample(prop = 0.99) %>% 
   ungroup()
 
 # Step 2: Fit using Meanfield Variational Inference (VI)
 fit_vi_test <- brm(
   formula = model,
-  data = df_test_sub ,
-  family = Gamma(link = "log"),
+  data = df_resp,
+  family = cumulative(link = "logit"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "meanfield",          # <--- Reliable, fast VI method
@@ -179,10 +182,12 @@ fit_model <- fit_vi_test
 # ==============================================================================
 # Fit the model
 # ==============================================================================
-fit_model <- brm(
+fit_delay <- brm(
   formula = model,
   data = df_resp,
-  family = Gamma(link = "log"),
+  
+  family = cumulative(link = "logit"),
+  
   prior = priors,
   
   backend = "cmdstanr",
@@ -191,13 +196,14 @@ fit_model <- brm(
   cores = 4,
   threads = threading(6),
   
-  iter = 2000,
-  warmup = 1000,
+  iter = 4000,
+  warmup = 2000,
+  
   seed = 42,
   
   control = list(
-    adapt_delta = 0.90,
-    max_treedepth = 10
+    adapt_delta = 0.95,
+    max_treedepth = 12
   )
 )
 
@@ -426,9 +432,11 @@ fit_model <- readRDS(
 )
 
 # ==============================================================================
-# Plot Habituation curves
+# Plot delay habituation curves: expected delay scale
 # ==============================================================================
-new_peak <- df_resp %>%
+delay_levels <- c(0, 1, 2, 3, 4)
+
+new_delay <- df_resp %>%
   group_by(Genotype, Block) %>%
   summarise(
     stim_min = min(stimulus, na.rm = TRUE),
@@ -445,33 +453,49 @@ new_peak <- df_resp %>%
     Block = factor(Block, levels = levels(df_resp$Block))
   )
 
-pred_peak <- fitted(
+# posterior_epred gives category probabilities:
+# draws x observations x response categories
+epred_delay <- posterior_epred(
   fit_model,
-  newdata = new_peak,
-  re_formula = NA,
-  summary = TRUE
+  newdata = new_delay,
+  re_formula = NA
 )
 
-pred_peak_data <- bind_cols(new_peak, as.data.frame(pred_peak)) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
+# Convert category probabilities to expected delay values
+delay_draws <- apply(epred_delay, c(1, 2), function(p) {
+  sum(p * delay_levels)
+})
 
-raw_peak <- df_resp %>%
+pred_delay_data <- bind_cols(
+  new_delay,
+  tibble(
+    fit = apply(delay_draws, 2, median),
+    CI_low = apply(delay_draws, 2, quantile, probs = 0.025),
+    CI_high = apply(delay_draws, 2, quantile, probs = 0.975)
+  )
+)
+
+raw_delay <- df_resp %>%
+  mutate(
+    delay_num = as.numeric(as.character(delay))
+  ) %>%
   group_by(Genotype, Block, stimulus) %>%
   summarise(
-    mean_peak = mean(max_peak, na.rm = TRUE),
+    mean_delay = mean(delay_num, na.rm = TRUE),
+    median_delay = median(delay_num, na.rm = TRUE),
+    n = n(),
     .groups = "drop"
   )
 
-p_peak_exp <- ggplot(pred_peak_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
+p_delay_exp <- ggplot(
+  pred_delay_data,
+  aes(x = stimulus, color = Genotype, fill = Genotype)
+) +
   facet_grid(Block ~ Genotype, scales = "fixed") +
   
   geom_point(
-    data = raw_peak,
-    aes(x = stimulus, y = mean_peak),
+    data = raw_delay,
+    aes(x = stimulus, y = mean_delay),
     alpha = 0.35,
     size = 1,
     inherit.aes = FALSE
@@ -488,10 +512,16 @@ p_peak_exp <- ggplot(pred_peak_data, aes(x = stimulus, color = Genotype, fill = 
     linewidth = 1.3
   ) +
   
+  scale_y_continuous(
+    limits = c(0, 4),
+    breaks = delay_levels
+  ) +
+  
   theme_pubr(base_size = 14) +
   labs(
     x = "Stimulus number within block",
-    y = "Peak distance moved",
+    y = "Expected delay",
+    title = "Bayesian nonlinear ordinal delay habituation curves",
     color = "Genotype",
     fill = "Genotype"
   ) +
@@ -500,218 +530,47 @@ p_peak_exp <- ggplot(pred_peak_data, aes(x = stimulus, color = Genotype, fill = 
     panel.spacing = unit(1.2, "lines")
   )
 
-print(p_peak_exp)
+print(p_delay_exp)
 
 ggsave(
   filename = file.path(
     base_dir,
     "figs",
-    paste0("nlme_", var_name, "_habituation_curves.png")
+    paste0("nlme_", var_name, "_delay_habituation_curves_expected.png")
   ),
-  plot = p_peak_exp,
+  plot = p_delay_exp,
   width = 14,
   height = 7,
   dpi = 300
 )
+
 # ==============================================================================
-# Plot latent-scale (log-scale) exponential curves
+# Plot delay habituation curves WITH true raw delay data
 # ==============================================================================
-# ------------------------------------------------------------------------------
-# 1. Create prediction grid
-# ------------------------------------------------------------------------------
-new_peak_log <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 200)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
 
-# ------------------------------------------------------------------------------
-# 2. Get latent-scale predictions: log(expected max_peak)
-# ------------------------------------------------------------------------------
-
-pred_log_peak <- fitted(
-  fit_model,
-  newdata = new_peak_log,
-  re_formula = NA,
-  scale = "linear",
-  summary = TRUE
-)
-
-pred_log_peak_data <- bind_cols(
-  new_peak_log,
-  as.data.frame(pred_log_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-# ------------------------------------------------------------------------------
-# 3. Convert raw peak distances to log scale
-# ------------------------------------------------------------------------------
-
-raw_peak_log <- df_resp %>%
-  filter(max_peak > 0) %>%
-  group_by(Genotype, Block, stimulus) %>%
-  summarise(
-    mean_peak = mean(max_peak, na.rm = TRUE),
-    median_peak = median(max_peak, na.rm = TRUE),
-    n = n(),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    log_mean_peak = log(mean_peak),
-    log_median_peak = log(median_peak)
-  )
-
-# ------------------------------------------------------------------------------
-# 4. Plot
-# ------------------------------------------------------------------------------
-
-p_log_peak <- ggplot(
-  pred_log_peak_data,
+p_delay_raw <- ggplot(
+  pred_delay_data,
   aes(x = stimulus, color = Genotype, fill = Genotype)
 ) +
-  
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  # Raw grouped means on log scale
-  geom_point(
-    data = raw_peak_log,
-    aes(
-      x = stimulus,
-      y = log_mean_peak,
-      color = Genotype
-    ),
-    inherit.aes = FALSE,
-    alpha = 0.5,
-    size = 1
-  ) +
-  
-  # Credible intervals
-  geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  # Model curve
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  
-  labs(
-    x = "Stimulus number within block",
-    y = "Latent peak distance moved (log scale)",
-    title = "Bayesian nonlinear habituation curves on latent log scale",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_log_peak)
-
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves_logit_scale_with_raw.png")
-  ),
-  plot = p_log_peak,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
-
-# ==============================================================================
-# Plot Habituation curves WITH true raw peak-distance data
-# ==============================================================================
-
-new_peak <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 100)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-pred_peak <- fitted(
-  fit_model,
-  newdata = new_peak,
-  re_formula = NA,
-  summary = TRUE
-)
-
-pred_peak_data <- bind_cols(
-  new_peak,
-  as.data.frame(pred_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-p_peak_exp <- ggplot(
-  pred_peak_data,
-  aes(
-    x = stimulus,
-    color = Genotype,
-    fill = Genotype
-  )
-) +
   facet_grid(Block ~ Genotype, scales = "fixed") +
   
   geom_jitter(
-    data = df_resp,
+    data = df_resp %>%
+      mutate(delay_num = as.numeric(as.character(delay))),
     aes(
       x = stimulus,
-      y = max_peak,
+      y = delay_num,
       color = Genotype
     ),
     inherit.aes = FALSE,
     width = 0.15,
-    height = 0,
+    height = 0.08,
     alpha = 0.12,
     size = 0.7
   ) +
   
   geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
+    aes(ymin = CI_low, ymax = CI_high),
     alpha = 0.15,
     color = NA
   ) +
@@ -721,10 +580,16 @@ p_peak_exp <- ggplot(
     linewidth = 1.3
   ) +
   
+  scale_y_continuous(
+    limits = c(0, 4),
+    breaks = delay_levels
+  ) +
+  
   theme_pubr(base_size = 14) +
   labs(
     x = "Stimulus number within block",
-    y = "Peak distance moved",
+    y = "Delay",
+    title = "Bayesian nonlinear ordinal delay curves with raw data",
     color = "Genotype",
     fill = "Genotype"
   ) +
@@ -733,24 +598,24 @@ p_peak_exp <- ggplot(
     panel.spacing = unit(1.2, "lines")
   )
 
-print(p_peak_exp)
+print(p_delay_raw)
 
 ggsave(
   filename = file.path(
     base_dir,
     "figs",
-    paste0("nlme_", var_name, "_habituation_curves_true_raw_data.png")
+    paste0("nlme_", var_name, "_delay_habituation_curves_true_raw_data.png")
   ),
-  plot = p_peak_exp,
+  plot = p_delay_raw,
   width = 14,
   height = 7,
   dpi = 300
 )
-# ==============================================================================
-# Plot latent-scale (log-scale) exponential curves WITH true raw peak-distance data
-# ==============================================================================
 
-new_peak_log <- df_resp %>%
+# ==============================================================================
+# Plot latent-scale nonlinear delay curves
+# ==============================================================================
+new_delay_latent <- df_resp %>%
   group_by(Genotype, Block) %>%
   summarise(
     stim_min = min(stimulus, na.rm = TRUE),
@@ -767,298 +632,66 @@ new_peak_log <- df_resp %>%
     Block = factor(Block, levels = levels(df_resp$Block))
   )
 
-pred_log_peak <- fitted(
+latent_draws <- posterior_linpred(
   fit_model,
-  newdata = new_peak_log,
-  re_formula = NA,
-  scale = "linear",
-  summary = TRUE
-)
-
-pred_log_peak_data <- bind_cols(
-  new_peak_log,
-  as.data.frame(pred_log_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-raw_peak_log <- df_resp %>%
-  filter(max_peak > 0) %>%
-  mutate(
-    log_peak = log(max_peak)
-  )
-
-p_log_peak <- ggplot(
-  pred_log_peak_data,
-  aes(
-    x = stimulus,
-    color = Genotype,
-    fill = Genotype
-  )
-) +
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  geom_jitter(
-    data = raw_peak_log,
-    aes(
-      x = stimulus,
-      y = log_peak,
-      color = Genotype
-    ),
-    inherit.aes = FALSE,
-    width = 0.15,
-    height = 0,
-    alpha = 0.12,
-    size = 0.7
-  ) +
-  
-  geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Stimulus number within block",
-    y = "Latent peak distance moved (log scale)",
-    title = "Bayesian nonlinear habituation curves on latent log scale",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_log_peak)
-
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves_logit_scale_true_raw_binary.png")
-  ),
-  plot = p_log_peak,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
-# ==============================================================================
-# Compare habituation rate k between all Genotypes
-# ==============================================================================
-# ------------------------------------------------------------------------------
-# 1. Create grid of Genotype × Block combinations
-# ------------------------------------------------------------------------------
-k_grid <- expand.grid(
-  Genotype = levels(df_resp$Genotype),
-  Block = levels(df_resp$Block)
-) %>%
-  mutate(
-    stimulus0 = 0,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-# ------------------------------------------------------------------------------
-# 2. Extract posterior draws for lrc
-# ------------------------------------------------------------------------------
-lrc_draws <- posterior_linpred(
-  fit_model,
-  newdata = k_grid,
-  nlpar = "lrc",
+  newdata = new_delay_latent,
   re_formula = NA,
   transform = FALSE
 )
 
-
-# ------------------------------------------------------------------------------
-# 3. Convert to k = exp(lrc)
-# ------------------------------------------------------------------------------
-
-k_draws_df <- bind_rows(
-  lapply(seq_len(nrow(k_grid)), function(i) {
-    
-    tibble(
-      draw = seq_len(nrow(lrc_draws)),
-      Genotype = k_grid$Genotype[i],
-      Block = k_grid$Block[i],
-      lrc = lrc_draws[, i],
-      k = exp(lrc_draws[, i])
-    )
-    
-  })
+pred_latent_delay_data <- bind_cols(
+  new_delay_latent,
+  tibble(
+    fit = apply(latent_draws, 2, median),
+    CI_low = apply(latent_draws, 2, quantile, probs = 0.025),
+    CI_high = apply(latent_draws, 2, quantile, probs = 0.975)
+  )
 )
 
-# ------------------------------------------------------------------------------
-# 4. Summary table
-# ------------------------------------------------------------------------------
-
-k_summary <- k_draws_df %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    k_median = median(k),
-    k_low = quantile(k, 0.025),
-    k_high = quantile(k, 0.975),
-    
-    half_life_median = median(log(2) / k),
-    
-    .groups = "drop"
-  )
-
-print(k_summary)
-
-# ------------------------------------------------------------------------------
-# 5. All pairwise genotype comparisons within each Block
-# ------------------------------------------------------------------------------
-
-comparison_df <- k_draws_df %>%
-  rename(
-    Genotype_1 = Genotype,
-    k_1 = k
-  ) %>%
-  inner_join(
-    k_draws_df %>%
-      rename(
-        Genotype_2 = Genotype,
-        k_2 = k
-      ),
-    by = c("draw", "Block"),
-    relationship = "many-to-many"
-  ) %>%
-  filter(as.character(Genotype_1) < as.character(Genotype_2)) %>%
-  mutate(
-    comparison = paste(Genotype_1, "vs", Genotype_2),
-    k_difference = k_1 - k_2,
-    k_ratio = k_1 / k_2
-  )
-
-# ------------------------------------------------------------------------------
-# 6. Summarise all comparisons
-# ------------------------------------------------------------------------------
-
-comparison_summary <- comparison_df %>%
-  group_by(Block, Genotype_1, Genotype_2, comparison) %>%
-  summarise(
-    median_difference = median(k_difference),
-    diff_low = quantile(k_difference, 0.025),
-    diff_high = quantile(k_difference, 0.975),
-    
-    median_ratio = median(k_ratio),
-    ratio_low = quantile(k_ratio, 0.025),
-    ratio_high = quantile(k_ratio, 0.975),
-    
-    prob_Genotype_1_faster = mean(k_1 > k_2),
-    prob_Genotype_2_faster = mean(k_1 < k_2),
-    
-    .groups = "drop"
-  )
-
-print(comparison_summary)
-
-write.csv(
-  comparison_summary,
-  file.path(
-    base_dir,
-    "results",
-    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_comparisons.csv")
-  ),
-  row.names = FALSE
-)
-
-
-# ------------------------------------------------------------------------------
-# 7. Plot posterior distributions of k
-# ------------------------------------------------------------------------------
-p_k <- ggplot(
-  k_draws_df,
-  aes(x = k, fill = Genotype)
+p_delay_latent <- ggplot(
+  pred_latent_delay_data,
+  aes(x = stimulus, color = Genotype, fill = Genotype)
 ) +
+  facet_grid(Block ~ Genotype, scales = "fixed") +
   
-  facet_wrap(~Block, scales = "free") +
+  geom_ribbon(
+    aes(ymin = CI_low, ymax = CI_high),
+    alpha = 0.15,
+    color = NA
+  ) +
   
-  geom_density(
-    alpha = 0.35
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
   ) +
   
   theme_pubr(base_size = 14) +
-  
   labs(
-    x = "Habituation rate k",
-    y = "Posterior density",
-    title = "Posterior distributions of habituation rate",
+    x = "Stimulus number within block",
+    y = "Latent delay tendency",
+    title = "Bayesian nonlinear delay curves on latent ordinal scale",
+    color = "Genotype",
     fill = "Genotype"
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
   )
 
-print(p_k)
+print(p_delay_latent)
 
 ggsave(
-  file.path(
+  filename = file.path(
     base_dir,
     "figs",
-    paste0("nlme_", var_name, "_habituation_rate_posteriors.png")
+    paste0("nlme_", var_name, "_delay_habituation_curves_latent_scale.png")
   ),
-  p_k,
-  width = 10,
-  height = 5,
+  plot = p_delay_latent,
+  width = 14,
+  height = 7,
   dpi = 300
 )
 
-# ------------------------------------------------------------------------------
-# 8. Plot all pairwise comparisons
-# ------------------------------------------------------------------------------
-
-p_compare <- comparison_summary %>%
-  ggplot(
-    aes(
-      x = comparison,
-      y = median_ratio,
-      ymin = ratio_low,
-      ymax = ratio_high,
-      color = Genotype_1
-    )
-  ) +
-  facet_wrap(~Block, scales = "free_x") +
-  geom_hline(
-    yintercept = 1,
-    linetype = "dashed"
-  ) +
-  geom_pointrange(
-    linewidth = 0.8
-  ) +
-  coord_flip() +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Comparison",
-    y = "Habituation rate ratio",
-    title = "All pairwise habituation rate comparisons",
-    color = "Numerator genotype"
-  )
-
-print(p_compare)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_ratios.png")
-  ),
-  p_compare,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
 
 # ==============================================================================
 # Compare Asym between all Genotypes
