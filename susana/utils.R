@@ -827,16 +827,154 @@ save_plot_as_png <- function(filename,
                       expr,
                       width = 1800,
                       height = 1400,
+                      bg = "white",
                       res = 200) {
   
   png(
     filename = file.path(diag_dir, filename),
     width = width,
     height = height,
+    bg = bg,
     res = res
   )
   
   eval(expr)
   
   dev.off()
+}
+
+# ==============================================================================
+# Helper functions for response prob model comparison
+# ==============================================================================
+
+make_nlpar_draws <- function(fit_model, df_resp, nlpar, transform_fun = identity) {
+  
+  grid <- expand.grid(
+    Genotype = levels(df_resp$Genotype),
+    Block = levels(df_resp$Block)
+  ) %>%
+    mutate(
+      stimulus0 = 0,
+      Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+      Block = factor(Block, levels = levels(df_resp$Block))
+    )
+  
+  draws <- posterior_linpred(
+    fit_model,
+    newdata = grid,
+    nlpar = nlpar,
+    re_formula = NA,
+    transform = FALSE
+  )
+  
+  bind_rows(
+    lapply(seq_len(nrow(grid)), function(i) {
+      tibble(
+        draw = seq_len(nrow(draws)),
+        Genotype = grid$Genotype[i],
+        Block = grid$Block[i],
+        value_raw = draws[, i],
+        value = transform_fun(draws[, i])
+      )
+    })
+  )
+}
+
+
+summarise_nlpar <- function(draws_df, value_name) {
+  
+  draws_df %>%
+    group_by(Genotype, Block) %>%
+    summarise(
+      median = median(value),
+      low = quantile(value, 0.025),
+      high = quantile(value, 0.975),
+      .groups = "drop"
+    ) %>%
+    rename(
+      !!paste0(value_name, "_median") := median,
+      !!paste0(value_name, "_low") := low,
+      !!paste0(value_name, "_high") := high
+    )
+}
+
+
+compare_nlpar <- function(draws_df, value_name, rope = 0.2, ratio = FALSE) {
+  
+  comp <- draws_df %>%
+    rename(
+      Genotype_1 = Genotype,
+      value_1 = value
+    ) %>%
+    inner_join(
+      draws_df %>%
+        rename(
+          Genotype_2 = Genotype,
+          value_2 = value
+        ),
+      by = c("draw", "Block"),
+      relationship = "many-to-many"
+    ) %>%
+    filter(as.integer(Genotype_1) < as.integer(Genotype_2)) %>%
+    mutate(
+      comparison = paste(Genotype_1, "vs", Genotype_2),
+      difference = value_1 - value_2
+    )
+  
+  if (ratio) {
+    comp <- comp %>%
+      mutate(ratio_value = value_1 / value_2)
+    
+    summary <- comp %>%
+      group_by(Block, Genotype_1, Genotype_2, comparison) %>%
+      summarise(
+        median_difference = median(difference),
+        diff_low = quantile(difference, 0.025),
+        diff_high = quantile(difference, 0.975),
+        
+        median_ratio = median(ratio_value),
+        ratio_low = quantile(ratio_value, 0.025),
+        ratio_high = quantile(ratio_value, 0.975),
+        
+        prob_Genotype_1_higher = mean(value_1 > value_2),
+        prob_Genotype_2_higher = mean(value_1 < value_2),
+        
+        ROPE_prob_10percent = mean(abs(log(ratio_value)) < log(1.10)),
+        
+        evidence_strength = case_when(
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.995 ~ "extreme",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.97  ~ "very strong",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.90  ~ "strong",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.75  ~ "moderate",
+          TRUE ~ "weak"
+        ),
+        .groups = "drop"
+      )
+    
+  } else {
+    
+    summary <- comp %>%
+      group_by(Block, Genotype_1, Genotype_2, comparison) %>%
+      summarise(
+        median_difference = median(difference),
+        diff_low = quantile(difference, 0.025),
+        diff_high = quantile(difference, 0.975),
+        
+        prob_Genotype_1_higher = mean(value_1 > value_2),
+        prob_Genotype_2_higher = mean(value_1 < value_2),
+        
+        ROPE_prob_small_effect = mean(abs(difference) < rope),
+        
+        evidence_strength = case_when(
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.995 ~ "extreme",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.97  ~ "very strong",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.90  ~ "strong",
+          pmax(prob_Genotype_1_higher, prob_Genotype_2_higher) > 0.75  ~ "moderate",
+          TRUE ~ "weak"
+        ),
+        .groups = "drop"
+      )
+  }
+  
+  list(draws = comp, summary = summary)
 }
