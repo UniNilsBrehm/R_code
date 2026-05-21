@@ -14,13 +14,18 @@ library(loo)
 library(DHARMa)
 library(bayesplot)
 
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
-source("D:/Behavior_Data/R_code/susana/utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
+
+# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+# source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <-
 
 file_dir <- file.path(
   base_dir,
@@ -55,16 +60,28 @@ df_resp <- df_final_sub %>%
 summary(df_resp[[col_name]])
 any(df_resp[[col_name]] <= 0, na.rm = TRUE)
 
+# Histogram
+ggplot(df_resp, aes(x = .data[[col_name]])) +
+  geom_histogram(
+    bins = 100,
+    fill = "lightblue",
+    color = "white"
+  ) +
+  labs(
+    title = paste("Histogram of", col_name),
+    x = col_name,
+    y = "Count"
+  ) +
+  theme_minimal()
+
 # ==============================================================================
 # The Model
 # ==============================================================================
 model <- bf(
-  as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
-  
-  Asym ~ Genotype * Block + (1 | animal),
-  R0   ~ Genotype * Block + (1 | animal),
-  lrc  ~ Genotype * Block + (1 | animal),
-  
+  max_cumsum ~ exp(A) + (exp(R0) - exp(A)) * exp(-exp(logk) * stimulus0),
+  A    ~ 1 + Genotype * Block + (1 | animal),   # <-- 1 +
+  R0   ~ 1 + Genotype * Block + (1 | animal),
+  logk ~ 1 + Genotype * Block + (1 | animal),
   nl = TRUE
 )
 
@@ -72,274 +89,151 @@ model <- bf(
 # The Priors
 # ==============================================================================
 priors <- c(
-  # Fixed Effects (Shifted mean to 1.25 to center near data median)
-  set_prior("normal(1.25, 1)", nlpar = "Asym", class = "b"),
-  set_prior("normal(1.25, 1)", nlpar = "R0", class = "b"),
-  set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"), # Keeps your gradual decay
-  
-  # Random Effects (Slightly restricted to prevent extreme animal-level explosions)
-  set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
-  set_prior("exponential(2)", nlpar = "R0", class = "sd"),
-  set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
-  
-  # Shape parameter for Gamma variance
-  set_prior("exponential(1)", class = "shape")
-  
+  # Reference cell baseline
+  prior(normal(2.0, 0.5),  nlpar = "R0",   class = "b", coef = "Intercept"),
+  prior(normal(0.5, 0.5),  nlpar = "A",    class = "b", coef = "Intercept"),
+  prior(normal(-2.3, 0.4), nlpar = "logk", class = "b", coef = "Intercept"),
+  # Deviations from reference (all genotype contrasts, block, interactions)
+  prior(normal(0, 0.5), nlpar = "R0",   class = "b"),
+  prior(normal(0, 0.5), nlpar = "A",    class = "b"),
+  prior(normal(0, 0.3), nlpar = "logk", class = "b"),
+  # Animal REs
+  prior(student_t(3, 0, 0.2), nlpar = "R0",   class = "sd"),
+  prior(student_t(3, 0, 0.2), nlpar = "A",    class = "sd"),
+  prior(student_t(3, 0, 0.2), nlpar = "logk", class = "sd"),
+  prior(gamma(2, 0.1), class = "shape")
 )
+
 # ==============================================================================
 # Validate Priors
 # ==============================================================================
 fit_prior_only <- brm(
   formula = model,
   data = df_resp,
-  family = Gamma(link = "log"),
+  family = Gamma(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   chains = 4,
   cores = 4,
-  iter = 2000,          
+  iter = 2000,
   warmup = 1000,
   seed = 42,
-  sample_prior = "only" 
+  sample_prior = "only"
 )
 
-# Prior predictive check for Gamma response
-yrep_prior <- posterior_predict(fit_prior_only, ndraws = 50)
+ep <- posterior_epred(fit_prior_only, ndraws = 500)
 
-ppc_dens_overlay(
-  y = df_resp[[col_name]],
-  yrep = yrep_prior
-) +
-  scale_x_log10() +
-  ggtitle("Prior Predictive Check: Density Overlay")
+quantile(as.vector(ep), c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
+quantile(df_resp[[col_name]], c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
 
-# Analytically Prior Validation (Logit Scale Simulation)
-# ==============================================================================
-rm(list = intersect(c("sim_asym", "sim_r0", "sim_lrc", "sim_k"), ls()))
+prior_draws <- as_draws_df(fit_prior_only)
+summary(prior_draws)
 
-set.seed(42)
-
-# Match your current priors
-sim_asym <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
-sim_r0   <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
-
-# lrc is still log-rate; k = exp(lrc)
-sim_lrc <- rnorm(10000, mean = -1.5, sd = 1.0)
-sim_k   <- exp(sim_lrc)
-
-print("Prior response-scale quantiles for Asym:")
-quantile(sim_asym, probs = c(0.025, 0.5, 0.975))
-
-print("Prior response-scale quantiles for R0:")
-quantile(sim_r0, probs = c(0.025, 0.5, 0.975))
-
-print("Prior habituation-rate quantiles for k = exp(lrc):")
-quantile(sim_k, probs = c(0.025, 0.5, 0.975))
-
-print("Prior half-life quantiles, log(2) / k:")
-quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975))
 
 # ==============================================================================
 # Fit Fast Test Model
 # ==============================================================================
-# Step 1: Create a tiny xx% subset of your data for rapid prototyping
-df_test_sub <- df_resp %>% 
-  group_by(Genotype, Block) %>% 
-  slice_sample(prop = 0.75) %>% 
-  ungroup()
-
-# Step 2: Fit using Meanfield Variational Inference (VI)
+# Fit using Meanfield Variational Inference (VI)
 fit_vi_test <- brm(
   formula = model,
-  data = df_test_sub ,
-  family = Gamma(link = "log"),
+  data = df_resp,               
+  family  = Gamma(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "meanfield",          # <--- Reliable, fast VI method
+  # algorithm = "fullrank",
   iter = 10000                      # VI likes higher iterations (it's still lightning fast)
 )
 
-fit_model <- fit_vi_test
+fit_nuts_test <- brm(
+  formula = model,
+  data = df_resp,
+  family  = Gamma(link = "identity"),
+  prior = priors,
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(6),
+  iter = 1000,
+  warmup = 500,
+  seed = 42,
+  control = list(adapt_delta = 0.90, max_treedepth = 10),
+  init    = 0,                        # important for nonlinear models
+)
 
-# # COMPARE TWO MODELS
-# # 1. Compute LOO for both models
-# loo_1 <- loo(fit_1, cores = 4)
-# loo_2    <- loo(fit_2, cores = 4)
-# 
-# # 2. Compare them
-# loo_compare(loo_1, loo_2)
-# 
-# # WAIC
-# waic_1 <- waic(fit_1)
-# waic_2    <- waic(fit_2)
-# 
-# loo_compare(waic_1, waic_2)
+fit_model <- fit_vi_test
+fit_model <- fit_nuts_test
 
 # ==============================================================================
 # Fit the model
 # ==============================================================================
 fit_model <- brm(
-  formula = model,
-  data = df_resp,
-  family = Gamma(link = "log"),
-  prior = priors,
-  
-  backend = "cmdstanr",
-  
-  chains = 4,
+  model,
+  data    = df_resp,
+  family  = Gamma(link = "identity"),
+  prior   = priors,
+  save_pars = save_pars(all = TRUE),
+  recompile = TRUE,
+  chains  = 4, 
   cores = 4,
   threads = threading(6),
-  
-  iter = 5000,
-  warmup = 2000,
-  seed = 42,
-  
-  control = list(
-    adapt_delta = 0.99,
-    max_treedepth = 15
-  )
+  iter    = 4000, 
+  warmup = 1500,
+  control = list(adapt_delta = 0.95, max_treedepth = 12),
+  init    = 0,
+  backend = "cmdstanr"
 )
 
 # ==============================================================================
 # Get summary and diagnostics
 # ==============================================================================
-summary(fit_model)
 
 diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
 
-# Trace plots
-trace_plots <- plot(fit_model, ask = FALSE)
-for (i in seq_along(trace_plots)) {
-  ggsave(
-    filename = file.path(
-      diag_dir,
-      paste0("nlme_", var_name, "_traceplot_", i, ".png")
-    ),
-    plot = trace_plots[[i]],
-    width = 12,
-    height = 8,
-    dpi = 300
-  )
-}
+# Sampler diagnostics
+# Top-level summary
+summary(fit_model)             # all Rhat < 1.01, Bulk_ESS > 400, Tail_ESS > 400
 
-# Posterior predictive checks
-p1 <- pp_check(fit_model, ndraws = 100)
+# Divergences
+sum(subset(nuts_params(fit_model), Parameter == "divergent__")$Value)
+# 0 ideal, single digits tolerable, more is concerning
 
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
-  p1,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
+# Energy diagnostics
+bayesplot::mcmc_nuts_energy(nuts_params(fit_model))
 
+# Posterior predictive check
+pp_check(fit_model, type = "dens_overlay", ndraws = 100)  # marginal fit
+pp_check(fit_model, type = "stat_grouped", group = "stimulus0",
+         stat = "median", ndraws = 100)             # does decay shape fit?
+pp_check(fit_model, type = "stat_grouped", group = "Genotype",
+         stat = "mean", ndraws = 100)               # do genotype means fit?
 
-p2 <- pp_check(
-  fit_model,
-  type = "dens_overlay",
-  ndraws = 100
-)
+df_resp |>
+  add_predicted_draws(fit_model, ndraws = 200) |>
+  group_by(Genotype, Block, stimulus0) |>
+  median_qi(.prediction, .width = c(0.5, 0.9)) |>
+  ggplot(aes(x = stimulus0, y = .prediction)) +
+  geom_lineribbon(aes(ymin = .lower, ymax = .upper)) +
+  geom_point(
+    data = df_resp |>
+      group_by(Genotype, Block, stimulus0) |>
+      summarise(observed = median(max_cumsum), .groups = "drop"),
+    aes(x = stimulus0, y = observed),    # <-- added x = stimulus0
+    color = "red", size = 0.8, inherit.aes = FALSE
+  ) +
+  scale_fill_brewer() +
+  facet_grid(Block ~ Genotype) +
+  labs(y = "max_cumsum", x = "stimulus")
 
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_densed_overlay.png")),
-  p2,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
+# Conditional curves per genotype × block
+conditional_effects(fit_model, effects = "stimulus0:Genotype",
+                    conditions = data.frame(Block = c("Block1", "Block2")))
 
-
-p3 <- pp_check(
-  fit_model,
-  type = "hist",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir,paste0("nlme_", var_name,"hist.png")),
-  p3,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-p4 <- pp_check(
-  fit_model,
-  type = "ecdf_overlay",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_ecdf.png")),
-  p4,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-
-p5 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "stimulus0",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_stimulus.png")),
-  p5,
-  width = 12,
-  height = 8,
-  dpi = 300
-)
-
-
-p6 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "Genotype",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_genotype.png")),
-  p6,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-p7 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "Block",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_block.png")),
-  p7,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-# Check the correlations between the main non-linear parameters
-# identifiability of nonlinear parameters
-save_plot_as_png(
-  paste0("nlme_", var_name, "_pairs_plot.png"),
-  quote(
-    pairs(
-      fit_model,
-      variable = c(
-        "b_Asym_Intercept",
-        "b_R0_Intercept",
-        "b_lrc_Intercept"
-      )
-    )
-  ),
-  width = 2200,
-  height = 2200
+bayesplot::mcmc_pairs(
+  fit_model, np = nuts_params(fit_model),
+  pars = c("b_logk_Intercept", "sd_animal__logk_Intercept"),
+  off_diag_args = list(size = 0.5)
 )
 
 # Residuals
@@ -365,50 +259,6 @@ save_plot_as_png(
 )
 # loo_compare(loo1, loo2)  # compare models
 
-# Random effects
-re_df <- ranef(fit_model)$animal
-
-re_long <- bind_rows(
-  as.data.frame(re_df[, , "Asym_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "Asym"),
-  as.data.frame(re_df[, , "R0_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "R0"),
-  as.data.frame(re_df[, , "lrc_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "lrc")
-)
-
-p_re <- ggplot(re_long,
-               aes(x = reorder(animal, Estimate),
-                   y = Estimate)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5),
-                width = 0) +
-  coord_flip() +
-  facet_wrap(~nlpar, scales = "free_x") +
-  theme_bw() +
-  labs(x = "Animal", y = "Random effect estimate")
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_random_effects.png")),
-  p_re,
-  width = 12,
-  height = 10,
-  dpi = 300
-)
-
-# Conditional effects plots
-ce <- conditional_effects(
-  fit_model,
-  effects = "stimulus0:Genotype",
-  re_formula = NA
-)
-save_plot_as_png(
-  paste0("nlme_", var_name, "_conditional_effects.png"),
-  quote(plot(ce)),
-  width = 2200,
-  height = 1800
-)
-
 # ==============================================================================
 # Save fitted model to HDD
 # ==============================================================================
@@ -427,79 +277,97 @@ fit_model <- readRDS(
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-new_peak <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 100)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
+plot_response_var <- function(df_resp, fit_model, var,
+                              y_label = NULL,
+                              n_points = 100) {
+  
+  var_name <- rlang::as_name(rlang::ensym(var))
+  
+  if (is.null(y_label)) {
+    y_label <- var_name
+  }
+  
+  new_data <- df_resp %>%
+    group_by(Genotype, Block) %>%
+    summarise(
+      stim_min = min(stimulus, na.rm = TRUE),
+      stim_max = max(stimulus, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    group_by(Genotype, Block) %>%
+    reframe(
+      stimulus = seq(stim_min, stim_max, length.out = n_points)
+    ) %>%
+    mutate(
+      stimulus0 = stimulus - 1,
+      Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+      Block = factor(Block, levels = levels(df_resp$Block))
+    )
+  
+  pred <- fitted(
+    fit_model,
+    newdata = new_data,
+    re_formula = NA,
+    summary = TRUE
   )
+  
+  pred_data <- bind_cols(new_data, as.data.frame(pred)) %>%
+    rename(
+      fit = Estimate,
+      CI_low = Q2.5,
+      CI_high = Q97.5
+    )
+  
+  raw_data <- df_resp %>%
+    group_by(Genotype, Block, stimulus) %>%
+    summarise(
+      mean_response = mean({{ var }}, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  ggplot(pred_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
+    facet_grid(Block ~ Genotype, scales = "fixed") +
+    
+    geom_point(
+      data = raw_data,
+      aes(x = stimulus, y = mean_response),
+      alpha = 0.35,
+      size = 1,
+      inherit.aes = FALSE
+    ) +
+    
+    geom_ribbon(
+      aes(ymin = CI_low, ymax = CI_high),
+      alpha = 0.15,
+      color = NA
+    ) +
+    
+    geom_line(
+      aes(y = fit),
+      linewidth = 1.3
+    ) +
+    
+    theme_pubr(base_size = 14) +
+    labs(
+      x = "Stimulus number within block",
+      y = y_label,
+      color = "Genotype",
+      fill = "Genotype"
+    ) +
+    theme(
+      legend.position = "top",
+      panel.spacing = unit(1.2, "lines")
+    )
+}
 
-pred_peak <- fitted(
-  fit_model,
-  newdata = new_peak,
-  re_formula = NA,
-  summary = TRUE
+p_cumsum_exp <- plot_response_var(
+  df_resp = df_resp,
+  fit_model = fit_model,
+  var = max_cumsum,
+  y_label = "Cumulative distance moved"
 )
 
-pred_peak_data <- bind_cols(new_peak, as.data.frame(pred_peak)) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-raw_peak <- df_resp %>%
-  group_by(Genotype, Block, stimulus) %>%
-  summarise(
-    mean_peak = mean(max_peak, na.rm = TRUE),
-    .groups = "drop"
-  )
-
-p_peak_exp <- ggplot(pred_peak_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  geom_point(
-    data = raw_peak,
-    aes(x = stimulus, y = mean_peak),
-    alpha = 0.35,
-    size = 1,
-    inherit.aes = FALSE
-  ) +
-  
-  geom_ribbon(
-    aes(ymin = CI_low, ymax = CI_high),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Stimulus number within block",
-    y = "Peak distance moved",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_peak_exp)
+print(p_cumsum_exp)
 
 ggsave(
   filename = file.path(
@@ -512,348 +380,7 @@ ggsave(
   height = 7,
   dpi = 300
 )
-# ==============================================================================
-# Plot latent-scale (log-scale) exponential curves
-# ==============================================================================
-# ------------------------------------------------------------------------------
-# 1. Create prediction grid
-# ------------------------------------------------------------------------------
-new_peak_log <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 200)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
 
-# ------------------------------------------------------------------------------
-# 2. Get latent-scale predictions: log(expected max_peak)
-# ------------------------------------------------------------------------------
-
-pred_log_peak <- fitted(
-  fit_model,
-  newdata = new_peak_log,
-  re_formula = NA,
-  scale = "linear",
-  summary = TRUE
-)
-
-pred_log_peak_data <- bind_cols(
-  new_peak_log,
-  as.data.frame(pred_log_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-# ------------------------------------------------------------------------------
-# 3. Convert raw peak distances to log scale
-# ------------------------------------------------------------------------------
-
-raw_peak_log <- df_resp %>%
-  filter(max_peak > 0) %>%
-  group_by(Genotype, Block, stimulus) %>%
-  summarise(
-    mean_peak = mean(max_peak, na.rm = TRUE),
-    median_peak = median(max_peak, na.rm = TRUE),
-    n = n(),
-    .groups = "drop"
-  ) %>%
-  mutate(
-    log_mean_peak = log(mean_peak),
-    log_median_peak = log(median_peak)
-  )
-
-# ------------------------------------------------------------------------------
-# 4. Plot
-# ------------------------------------------------------------------------------
-
-p_log_peak <- ggplot(
-  pred_log_peak_data,
-  aes(x = stimulus, color = Genotype, fill = Genotype)
-) +
-  
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  # Raw grouped means on log scale
-  geom_point(
-    data = raw_peak_log,
-    aes(
-      x = stimulus,
-      y = log_mean_peak,
-      color = Genotype
-    ),
-    inherit.aes = FALSE,
-    alpha = 0.5,
-    size = 1
-  ) +
-  
-  # Credible intervals
-  geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  # Model curve
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  
-  labs(
-    x = "Stimulus number within block",
-    y = "Latent peak distance moved (log scale)",
-    title = "Bayesian nonlinear habituation curves on latent log scale",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_log_peak)
-
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves_logit_scale_with_raw.png")
-  ),
-  plot = p_log_peak,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
-
-# ==============================================================================
-# Plot Habituation curves WITH true raw peak-distance data
-# ==============================================================================
-
-new_peak <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 100)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-pred_peak <- fitted(
-  fit_model,
-  newdata = new_peak,
-  re_formula = NA,
-  summary = TRUE
-)
-
-pred_peak_data <- bind_cols(
-  new_peak,
-  as.data.frame(pred_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-p_peak_exp <- ggplot(
-  pred_peak_data,
-  aes(
-    x = stimulus,
-    color = Genotype,
-    fill = Genotype
-  )
-) +
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  geom_jitter(
-    data = df_resp,
-    aes(
-      x = stimulus,
-      y = max_peak,
-      color = Genotype
-    ),
-    inherit.aes = FALSE,
-    width = 0.15,
-    height = 0,
-    alpha = 0.12,
-    size = 0.7
-  ) +
-  
-  geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Stimulus number within block",
-    y = "Peak distance moved",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_peak_exp)
-
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves_true_raw_data.png")
-  ),
-  plot = p_peak_exp,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
-# ==============================================================================
-# Plot latent-scale (log-scale) exponential curves WITH true raw peak-distance data
-# ==============================================================================
-
-new_peak_log <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  group_by(Genotype, Block) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 200)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-pred_log_peak <- fitted(
-  fit_model,
-  newdata = new_peak_log,
-  re_formula = NA,
-  scale = "linear",
-  summary = TRUE
-)
-
-pred_log_peak_data <- bind_cols(
-  new_peak_log,
-  as.data.frame(pred_log_peak)
-) %>%
-  rename(
-    fit = Estimate,
-    CI_low = Q2.5,
-    CI_high = Q97.5
-  )
-
-raw_peak_log <- df_resp %>%
-  filter(max_peak > 0) %>%
-  mutate(
-    log_peak = log(max_peak)
-  )
-
-p_log_peak <- ggplot(
-  pred_log_peak_data,
-  aes(
-    x = stimulus,
-    color = Genotype,
-    fill = Genotype
-  )
-) +
-  facet_grid(Block ~ Genotype, scales = "fixed") +
-  
-  geom_jitter(
-    data = raw_peak_log,
-    aes(
-      x = stimulus,
-      y = log_peak,
-      color = Genotype
-    ),
-    inherit.aes = FALSE,
-    width = 0.15,
-    height = 0,
-    alpha = 0.12,
-    size = 0.7
-  ) +
-  
-  geom_ribbon(
-    aes(
-      ymin = CI_low,
-      ymax = CI_high
-    ),
-    alpha = 0.15,
-    color = NA
-  ) +
-  
-  geom_line(
-    aes(y = fit),
-    linewidth = 1.3
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Stimulus number within block",
-    y = "Latent peak distance moved (log scale)",
-    title = "Bayesian nonlinear habituation curves on latent log scale",
-    color = "Genotype",
-    fill = "Genotype"
-  ) +
-  theme(
-    legend.position = "top",
-    panel.spacing = unit(1.2, "lines")
-  )
-
-print(p_log_peak)
-
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves_logit_scale_true_raw_binary.png")
-  ),
-  plot = p_log_peak,
-  width = 14,
-  height = 7,
-  dpi = 300
-)
 # ==============================================================================
 # Compare habituation rate k between all Genotypes
 # ==============================================================================
@@ -1375,4 +902,3 @@ ggsave(
   height = 8,
   dpi = 300
 )
-

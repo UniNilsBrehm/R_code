@@ -29,16 +29,18 @@ save_plot <- function(p, filename, width = 7, height = 5) {
 }
 # ==============================================================================
 
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+
 # source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/nlme_plot_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
 
-source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
-source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+# source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
@@ -79,12 +81,25 @@ df_resp <- df_final %>%
 # ==============================================================================
 # The Model
 # ==============================================================================
-model <- bf(
+model_logit <- bf(
   move ~ A + (R0 - A) * exp(-exp(logk) * stimulus0),
   
-  A     ~ 0 + Genotype * Block + (1 | animal), # initial response level on logit scale
-  R0    ~ 0 + Genotype * Block + (1 | animal), # final/asymptotic response level on logit scale
+  A     ~ 0 + Genotype * Block + (1 | animal), # final/asymptotic response level on logit scale
+  R0    ~ 0 + Genotype * Block + (1 | animal), # initial response level on logit scale
   logk ~ 0 + Genotype * Block + (1 | animal),  # log decay rate: k = exp(logk), half_life = log(2) / exp(logk)
+  
+  nl = TRUE
+)
+
+# on the prob scale
+model_identity <- bf(
+  move ~ inv_logit(A) +
+    (inv_logit(R0) - inv_logit(A)) *
+    exp(-exp(logk) * stimulus0),
+  
+  A    ~ 0 + Genotype * Block + (1 | animal),
+  R0   ~ 0 + Genotype * Block + (1 | animal),
+  logk ~ 0 + Genotype * Block + (1 | animal),
   
   nl = TRUE
 )
@@ -281,7 +296,132 @@ fit_vi_test <- brm(
   iter = 10000                      # VI likes higher iterations (it's still lightning fast)
 )
 
+fit_vi_fullrank <- brm(
+  formula = model,
+  data = df_resp,
+  family = bernoulli(link = "logit"),
+  prior = priors,
+  backend = "cmdstanr",
+  algorithm = "fullrank",
+  iter = 10000,
+  seed = 42
+)
+
+fit_nuts_debug <- brm(
+  formula = model_logit,
+  data = df_resp,
+  family = bernoulli(link = "logit"),
+  # family = bernoulli(link = "identity"),
+  prior = priors,
+  backend = "cmdstanr",
+  chains = 1,
+  cores = 1,
+  threads = threading(6),
+  iter = 600,
+  warmup = 300,
+  seed = 42,
+  control = list(
+    adapt_delta = 0.90,
+    max_treedepth = 10
+  )
+)
+
+fit_nuts_test <- brm(
+  formula = model,
+  data = df_resp,
+  # family = bernoulli(link = "logit"),
+  family = bernoulli(link = "identity"),
+  prior = priors,
+  save_pars = save_pars(all = TRUE),
+  init    = 0,                        # important for nonlinear models
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(6),
+  iter = 1000,
+  warmup = 500,
+  seed = 42,
+  control = list(
+    adapt_delta = 0.90,
+    max_treedepth = 10
+  )
+)
+
 fit_model <- fit_vi_test
+
+fit_model <- fit_vi_fullrank
+
+fit_model <- fit_nuts_debug 
+
+fit_model <- fit_nuts_test
+
+# Compare models
+loo_logit <- loo(fit_logit, moment_match = TRUE)
+loo_identity <- loo(fit_identity, moment_match = TRUE)
+
+print(loo_logit)
+print(loo_identity)
+
+loo_compare(loo_logit, loo_identity)
+
+pp_check(fit_logit)
+pp_check(fit_identity)
+
+# Very slow
+kfold_logit <- kfold(fit_logit, K = 10)
+kfold_identity <- kfold(fit_identity, K = 10)
+
+loo_compare(kfold_logit, kfold_identity)
+
+# How much and where do they differ:
+new_resp <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 200),
+    .by = c(Genotype, Block)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block = factor(Block, levels = levels(df_resp$Block))
+  )
+
+pred_logit <- fitted(fit_logit, newdata = new_resp, re_formula = NA)
+pred_identity <- fitted(fit_identity, newdata = new_resp, re_formula = NA)
+
+compare_pred <- new_resp %>%
+  bind_cols(
+    logit_fit = pred_logit[, "Estimate"],
+    identity_fit = pred_identity[, "Estimate"]
+  ) %>%
+  mutate(
+    difference = logit_fit - identity_fit
+  )
+
+summary(compare_pred$difference)
+
+ggplot(compare_pred, aes(x = stimulus, y = difference)) +
+  facet_grid(Block ~ Genotype) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  geom_line() +
+  theme_pubr(base_size = 14) +
+  labs(
+    x = "Stimulus number",
+    y = "Predicted probability difference: logit - identity",
+    title = "Difference between logit-link and identity-link model predictions"
+  )
+
+bf_logit_vs_identity <- bayes_factor(
+  fit_logit,
+  fit_identity
+)
+
+print(bf_logit_vs_identity)
 
 # ==============================================================================
 # Fit the model
@@ -295,19 +435,13 @@ fit_model <- brm(
   chains = 4,
   cores = 4,
   threads = threading(6),
-  iter = 3000,
-  warmup = 1000,
+  iter = 4000,
+  warmup = 1500,
   seed = 42,
-  control = list(adapt_delta = 0.90, max_treedepth = 10)
+  control = list(adapt_delta = 0.90, max_treedepth = 10),
+  init    = 0,                        # important for nonlinear models
 )
 
-# identity because our formula yields the logit directly, but brms needs to 
-# know it's a probability mapping if we don't wrap it, OR use link="logit" if 
-# we wrap the right side. 
-# Alternative cleaner approach for brms logit link:
-# family = bernoulli(link = "logit"), but then the formula predicts the 
-# logit directly:
-# move ~ A + B * exp(-exp(c) * stimulus0)
 
 # ==============================================================================
 # Save fitted model to HDD
@@ -344,7 +478,9 @@ p_hab <- plot_habituation_probability(
   df_resp = df_resp,
   fit_model = fit_model,
   save_fig_dir = save_fig_dir,
-  var_name = var_name
+  var_name = var_name,
+  # raw_data = "binary"
+  raw_data = "aggregate"
 )
 
 p_hab
@@ -357,6 +493,17 @@ p_latent <- plot_habituation_latent(
 )
 
 p_latent
+
+# Only for diagnostics
+p_animal_avg <- plot_habituation_probability_animal_averaged(
+  df_resp = df_resp,
+  fit_model = fit_model,
+  save_fig_dir = save_fig_dir,
+  var_name = "response_prob",
+  ndraws = NULL
+)
+
+print(p_animal_avg)
 
 # ==============================================================================
 # Compare nonlinear model parameters
@@ -593,3 +740,286 @@ p_p0_compare <- plot_pairwise_differences(
   paste0("nlme_", var_name, "_p0_all_pairwise_differences.png"),
   save_fig_dir = save_fig_dir
 )
+
+
+# ==============================================================================
+# Simple aggregate response-probability exponential fits
+# ==============================================================================
+
+library(purrr)
+library(broom)
+
+# ------------------------------------------------------------------------------
+# 1. Compute response probability per Genotype × Block × stimulus
+# ------------------------------------------------------------------------------
+
+df_prob_agg <- df_final %>%
+  mutate(
+    stimulus = as.numeric(stimulus),
+    stimulus0 = stimulus - 1,
+    Genotype = factor(Genotype),
+    Block = factor(Block),
+    move = as.integer(move)
+  ) %>%
+  group_by(Genotype, Block, stimulus, stimulus0) %>%
+  summarise(
+    n_animals = n(),
+    n_response = sum(move, na.rm = TRUE),
+    response_prob = mean(move, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+print(df_prob_agg)
+
+# ------------------------------------------------------------------------------
+# 2. Fit simple exponential per Genotype × Block
+# response_prob = A + (R0 - A) * exp(-exp(logk) * stimulus0)
+# ------------------------------------------------------------------------------
+
+fit_simple_exp <- function(dat) {
+  tryCatch(
+    {
+      nls(
+        response_prob ~ A + (R0 - A) * exp(-exp(logk) * stimulus0),
+        data = dat,
+        weights = n_animals,
+        start = list(
+          A    = max(0.01, min(dat$response_prob, na.rm = TRUE)),
+          R0   = min(0.99, max(dat$response_prob, na.rm = TRUE)),
+          logk = log(0.1)
+        ),
+        algorithm = "port",
+        lower = c(
+          A    = 0.001,
+          R0   = 0.001,
+          logk = log(0.0001)
+        ),
+        upper = c(
+          A    = 0.999,
+          R0   = 0.999,
+          logk = log(10)
+        ),
+        control = nls.control(
+          maxiter = 500,
+          warnOnly = TRUE
+        )
+      )
+    },
+    error = function(e) {
+      message(
+        "NLS failed for ",
+        unique(dat$Genotype), " ",
+        unique(dat$Block), ": ",
+        e$message
+      )
+      return(NULL)
+    }
+  )
+}
+
+simple_fits <- df_prob_agg %>%
+  group_by(Genotype, Block) %>%
+  group_split() %>%
+  map(fit_simple_exp)
+
+fit_keys <- df_prob_agg %>%
+  distinct(Genotype, Block) %>%
+  arrange(Genotype, Block)
+
+# ------------------------------------------------------------------------------
+# 3. Extract fitted parameters
+# ------------------------------------------------------------------------------
+
+simple_exp_params <- map2_dfr(
+  simple_fits,
+  seq_along(simple_fits),
+  function(mod, i) {
+    if (is.null(mod)) {
+      tibble(
+        Genotype = fit_keys$Genotype[i],
+        Block = fit_keys$Block[i],
+        A = NA_real_,
+        R0 = NA_real_,
+        logk = NA_real_,
+        k = NA_real_
+      )
+    } else {
+      cc <- coef(mod)
+      
+      tibble(
+        Genotype = fit_keys$Genotype[i],
+        Block = fit_keys$Block[i],
+        A = unname(cc["A"]),
+        R0 = unname(cc["R0"]),
+        logk = unname(cc["logk"]),
+        k = exp(unname(cc["logk"]))
+      )
+    }
+  }
+) %>%
+  mutate(
+    half_life_stimuli = log(2) / k
+  )
+
+print(simple_exp_params)
+
+write.csv(
+  simple_exp_params,
+  file = file.path(base_dir, "results", "simple_aggregate_exp_response_prob_parameters.csv"),
+  row.names = FALSE
+)
+
+# ------------------------------------------------------------------------------
+# 4. Generate smooth fitted curves
+# ------------------------------------------------------------------------------
+
+simple_exp_pred <- df_prob_agg %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    stim_min = min(stimulus, na.rm = TRUE),
+    stim_max = max(stimulus, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  group_by(Genotype, Block) %>%
+  reframe(
+    stimulus = seq(stim_min, stim_max, length.out = 100)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1
+  ) %>%
+  left_join(simple_exp_params, by = c("Genotype", "Block")) %>%
+  mutate(
+    fit = A + (R0 - A) * exp(-exp(logk) * stimulus0)
+  )
+
+# ------------------------------------------------------------------------------
+# 5. Plot simple aggregate exponential curves
+# ------------------------------------------------------------------------------
+
+p_simple_exp <- ggplot(simple_exp_pred, aes(x = stimulus, color = Genotype, fill = Genotype)) +
+  facet_grid(Block ~ Genotype, scales = "fixed") +
+  
+  geom_point(
+    data = df_prob_agg,
+    aes(x = stimulus, y = response_prob, color = Genotype),
+    alpha = 0.45,
+    size = 1,
+    inherit.aes = FALSE
+  ) +
+  
+  geom_line(
+    aes(y = fit),
+    linewidth = 1.3
+  ) +
+  
+  scale_y_continuous(
+    limits = c(0, 1),
+    breaks = seq(0, 1, by = 0.25)
+  ) +
+  
+  theme_pubr(base_size = 14) +
+  labs(
+    x = "Stimulus number within block",
+    y = "Response probability",
+    color = "Genotype",
+    fill = "Genotype",
+    title = "Simple aggregate exponential fits"
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing = unit(1.2, "lines")
+  )
+
+print(p_simple_exp)
+
+ggsave(
+  filename = file.path(base_dir, "figs", "Simple_aggregate_exp_response_prob_curves.png"),
+  plot = p_simple_exp,
+  width = 14,
+  height = 7,
+  dpi = 300
+)
+
+# ==============================================================================
+# Create brms priors from aggregate simple-fit parameters
+# ==============================================================================
+
+library(dplyr)
+library(brms)
+
+# Priors on logit scale
+simple_exp_priors <- simple_exp_params %>%
+  mutate(
+    A_logit  = qlogis(A),
+    R0_logit = qlogis(R0),
+    logk_prior = logk
+  )
+
+# priors on prob. scale
+# simple_exp_priors <- simple_exp_params %>%
+#   mutate(
+#     A_logit  = A,
+#     R0_logit = R0,
+#     logk_prior = logk
+#   )
+
+prior_summary <- simple_exp_priors %>%
+  summarise(
+    A_mean = mean(A_logit, na.rm = TRUE),
+    A_sd   = sd(A_logit, na.rm = TRUE),
+    
+    R0_mean = mean(R0_logit, na.rm = TRUE),
+    R0_sd   = sd(R0_logit, na.rm = TRUE),
+    
+    logk_mean = mean(logk_prior, na.rm = TRUE),
+    logk_sd   = sd(logk_prior, na.rm = TRUE)
+  ) %>%
+  mutate(
+    A_sd_prior    = max(A_sd, 1.0),
+    R0_sd_prior   = max(R0_sd, 1.0),
+    logk_sd_prior = max(logk_sd, 1.0)
+  )
+
+print(prior_summary)
+
+priors <- c(
+  prior_string(
+    paste0(
+      "normal(",
+      round(prior_summary$A_mean, 3), ", ",
+      round(prior_summary$A_sd_prior, 3),
+      ")"
+    ),
+    class = "b",
+    nlpar = "A"
+  ),
+  
+  prior_string(
+    paste0(
+      "normal(",
+      round(prior_summary$R0_mean, 3), ", ",
+      round(prior_summary$R0_sd_prior, 3),
+      ")"
+    ),
+    class = "b",
+    nlpar = "R0"
+  ),
+  
+  prior_string(
+    paste0(
+      "normal(",
+      round(prior_summary$logk_mean, 3), ", ",
+      round(prior_summary$logk_sd_prior, 3),
+      ")"
+    ),
+    class = "b",
+    nlpar = "logk"
+  ),
+  
+  prior(exponential(2), class = "sd", nlpar = "A"),
+  prior(exponential(2), class = "sd", nlpar = "R0"),
+  prior(exponential(2), class = "sd", nlpar = "logk")
+)
+
+print(priors)
+

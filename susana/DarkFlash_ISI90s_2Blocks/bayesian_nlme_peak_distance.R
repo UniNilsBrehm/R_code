@@ -14,13 +14,18 @@ library(loo)
 library(DHARMa)
 library(bayesplot)
 
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
-source("D:/Behavior_Data/R_code/susana/utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
+
+# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+# source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <-
 
 file_dir <- file.path(
   base_dir,
@@ -55,69 +60,48 @@ df_resp <- df_final_sub %>%
 summary(df_resp[[col_name]])
 any(df_resp[[col_name]] <= 0, na.rm = TRUE)
 
+# Histogram
+ggplot(df_resp, aes(x = .data[[col_name]])) +
+  geom_histogram(
+    bins = 100,
+    fill = "lightblue",
+    color = "white"
+  ) +
+  labs(
+    title = paste("Histogram of", col_name),
+    x = col_name,
+    y = "Count"
+  ) +
+  theme_minimal()
+
 # ==============================================================================
 # The Model
 # ==============================================================================
-# model <- bf(
-#   as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
-#   
-#   Asym ~ Genotype * Block + (1 | animal),
-#   R0   ~ Genotype * Block + (1 | animal),
-#   lrc  ~ Genotype * Block + (1 | animal),
-#   
-#   nl = TRUE
-# )
-
 model <- bf(
-  as.formula(paste0(
-    col_name, " ~ exp(logAsym) + ",
-    "(exp(logR0) - exp(logAsym)) * exp(-exp(lrc) * stimulus0)"
-  )),
-  
-  logAsym ~ Genotype * Block + (1 | animal),
-  logR0   ~ Genotype * Block + (1 | animal),
-  lrc      ~ Genotype * Block + (1 | animal),
-  
+  max_peak ~ exp(A) + (exp(R0) - exp(A)) * exp(-exp(logk) * stimulus0),
+  A    ~ 1 + Genotype * Block + (1 | animal),   # <-- 1 +
+  R0   ~ 1 + Genotype * Block + (1 | animal),
+  logk ~ 1 + Genotype * Block + (1 | animal),
   nl = TRUE
 )
 
 # ==============================================================================
 # The Priors
 # ==============================================================================
-# priors <- c(
-#   
-#   # asymptotic response
-#   set_prior("normal(log(1.5), 0.3)", nlpar = "Asym", class = "b"),
-#   
-#   # initial response
-#   set_prior("normal(log(8), 0.4)", nlpar = "R0", class = "b"),
-#   
-#   # decay rate
-#   set_prior("normal(-1.5, 0.5)", nlpar = "lrc", class = "b"),
-#   
-#   # random effects
-#   set_prior("exponential(3)", nlpar = "Asym", class = "sd"),
-#   set_prior("exponential(3)", nlpar = "R0", class = "sd"),
-#   set_prior("exponential(3)", nlpar = "lrc", class = "sd"),
-#   
-#   # gamma shape
-#   set_prior("exponential(1)", class = "shape")
-# )
-
 priors <- c(
-  set_prior("normal(log(1.2), 0.3)", nlpar = "logAsym", class = "b", coef = "Intercept"),
-  set_prior("normal(log(4.5), 0.35)", nlpar = "logR0", class = "b", coef = "Intercept"),
-  set_prior("normal(-1.5, 0.45)", nlpar = "lrc", class = "b", coef = "Intercept"),
-  
-  set_prior("normal(0, 0.35)", nlpar = "logAsym", class = "b"),
-  set_prior("normal(0, 0.35)", nlpar = "logR0", class = "b"),
-  set_prior("normal(0, 0.35)", nlpar = "lrc", class = "b"),
-  
-  set_prior("exponential(8)", nlpar = "logAsym", class = "sd"),
-  set_prior("exponential(8)", nlpar = "logR0", class = "sd"),
-  set_prior("exponential(8)", nlpar = "lrc", class = "sd"),
-  
-  set_prior("gamma(20, 2)", class = "shape")
+  # Reference cell baseline
+  prior(normal(2.0, 0.3),  nlpar = "R0",   class = "b", coef = "Intercept"),
+  prior(normal(0.5, 0.3),  nlpar = "A",    class = "b", coef = "Intercept"),
+  prior(normal(-2.3, 0.4), nlpar = "logk", class = "b", coef = "Intercept"),
+  # Deviations from reference (all genotype contrasts, block, interactions)
+  prior(normal(0, 0.2), nlpar = "R0",   class = "b"),
+  prior(normal(0, 0.2), nlpar = "A",    class = "b"),
+  prior(normal(0, 0.2), nlpar = "logk", class = "b"),
+  # Animal REs
+  prior(student_t(3, 0, 0.2), nlpar = "R0",   class = "sd"),
+  prior(student_t(3, 0, 0.2), nlpar = "A",    class = "sd"),
+  prior(student_t(3, 0, 0.2), nlpar = "logk", class = "sd"),
+  prior(gamma(2, 0.1), class = "shape")
 )
 
 # ==============================================================================
@@ -143,210 +127,113 @@ quantile(as.vector(ep), c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
 quantile(df_resp[[col_name]], c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
 
 prior_draws <- as_draws_df(fit_prior_only)
-summary(prior_draws$`b_logR0_Intercept`)
-summary(prior_draws$`sd_animal__logR0_Intercept`)
+summary(prior_draws)
+
 
 # ==============================================================================
 # Fit Fast Test Model
 # ==============================================================================
-# Step 1: Create a tiny xx% subset of your data for rapid prototyping
-df_test_sub <- df_resp %>% 
-  group_by(Genotype, Block) %>% 
-  slice_sample(prop = 0.95) %>% 
-  ungroup()
-
-# Step 2: Fit using Meanfield Variational Inference (VI)
+# Fit using Meanfield Variational Inference (VI)
 fit_vi_test <- brm(
   formula = model,
-  data = df_test_sub ,
-  family = Gamma(link = "identity"),
+  data = df_resp,               
+  family  = Gamma(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "meanfield",          # <--- Reliable, fast VI method
+  # algorithm = "fullrank",
   iter = 10000                      # VI likes higher iterations (it's still lightning fast)
 )
 
-fit_model <- fit_vi_test
+fit_nuts_test <- brm(
+  formula = model,
+  data = df_resp,
+  family  = Gamma(link = "identity"),
+  prior = priors,
+  save_pars = save_pars(all = TRUE),
+  backend = "cmdstanr",
+  chains = 2,
+  cores = 2,
+  threads = threading(6),
+  iter = 1000,
+  warmup = 500,
+  seed = 42,
+  control = list(adapt_delta = 0.90, max_treedepth = 10),
+  init    = 0,                        # important for nonlinear models
+)
 
-# # COMPARE TWO MODELS
-# # 1. Compute LOO for both models
-# loo_1 <- loo(fit_1, cores = 4)
-# loo_2    <- loo(fit_2, cores = 4)
-# 
-# # 2. Compare them
-# loo_compare(loo_1, loo_2)
-# 
-# # WAIC
-# waic_1 <- waic(fit_1)
-# waic_2    <- waic(fit_2)
-# 
-# loo_compare(waic_1, waic_2)
+fit_model <- fit_vi_test
+fit_model <- fit_nuts_test
 
 # ==============================================================================
 # Fit the model
 # ==============================================================================
 fit_model <- brm(
-  formula = model,
-  data = df_resp,
-  family = Gamma(link = "identity"),
-  prior = priors,
-  
-  backend = "cmdstanr",
-  
-  chains = 4,
+  model,
+  data    = df_resp,
+  family  = Gamma(link = "identity"),
+  prior   = priors,
+  save_pars = save_pars(all = TRUE),
+  recompile = TRUE,
+  chains  = 4, 
   cores = 4,
   threads = threading(6),
-  
-  iter = 4000,
+  iter    = 4000, 
   warmup = 1500,
-  seed = 42,
-  
-  control = list(
-    adapt_delta = 0.90,
-    max_treedepth = 10
-  )
+  control = list(adapt_delta = 0.95, max_treedepth = 12),
+  init    = 0,
+  backend = "cmdstanr"
 )
 
 # ==============================================================================
 # Get summary and diagnostics
 # ==============================================================================
-summary(fit_model)
 
 diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
 
-# Trace plots
-trace_plots <- plot(fit_model, ask = FALSE)
-for (i in seq_along(trace_plots)) {
-  ggsave(
-    filename = file.path(
-      diag_dir,
-      paste0("nlme_", var_name, "_traceplot_", i, ".png")
-    ),
-    plot = trace_plots[[i]],
-    width = 12,
-    height = 8,
-    dpi = 300
-  )
-}
+# Sampler diagnostics
+# Top-level summary
+summary(fit_model)             # all Rhat < 1.01, Bulk_ESS > 400, Tail_ESS > 400
 
-# Posterior predictive checks
-p1 <- pp_check(fit_model, ndraws = 100)
+# Divergences
+sum(subset(nuts_params(fit_model), Parameter == "divergent__")$Value)
+# 0 ideal, single digits tolerable, more is concerning
 
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
-  p1,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
+# Energy diagnostics
+bayesplot::mcmc_nuts_energy(nuts_params(fit_model))
 
+# Posterior predictive check
+pp_check(fit_model, type = "dens_overlay", ndraws = 100)  # marginal fit
+pp_check(fit_model, type = "stat_grouped", group = "stimulus0",
+         stat = "median", ndraws = 100)             # does decay shape fit?
+pp_check(fit_model, type = "stat_grouped", group = "Genotype",
+         stat = "mean", ndraws = 100)               # do genotype means fit?
 
-p2 <- pp_check(
-  fit_model,
-  type = "dens_overlay",
-  ndraws = 100
-)
+df_resp |>
+  add_predicted_draws(fit_model, ndraws = 200) |>
+  group_by(Genotype, Block, stimulus0) |>
+  median_qi(.prediction, .width = c(0.5, 0.9)) |>
+  ggplot(aes(x = stimulus0, y = .prediction)) +
+  geom_lineribbon(aes(ymin = .lower, ymax = .upper)) +
+  geom_point(
+    data = df_resp |>
+      group_by(Genotype, Block, stimulus0) |>
+      summarise(observed = median(max_peak), .groups = "drop"),
+    aes(x = stimulus0, y = observed),    # <-- added x = stimulus0
+    color = "red", size = 0.8, inherit.aes = FALSE
+  ) +
+  scale_fill_brewer() +
+  facet_grid(Block ~ Genotype) +
+  labs(y = "max_peak", x = "stimulus")
 
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_densed_overlay.png")),
-  p2,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
+# Conditional curves per genotype × block
+conditional_effects(fit_model, effects = "stimulus0:Genotype",
+                    conditions = data.frame(Block = c("Block1", "Block2")))
 
-
-p3 <- pp_check(
-  fit_model,
-  type = "hist",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir,paste0("nlme_", var_name,"hist.png")),
-  p3,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-p4 <- pp_check(
-  fit_model,
-  type = "ecdf_overlay",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_ecdf.png")),
-  p4,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-
-p5 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "stimulus0",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_stimulus.png")),
-  p5,
-  width = 12,
-  height = 8,
-  dpi = 300
-)
-
-
-p6 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "Genotype",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_genotype.png")),
-  p6,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-p7 <- pp_check(
-  fit_model,
-  type = "stat_grouped",
-  group = "Block",
-  ndraws = 100
-)
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_block.png")),
-  p7,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-# Check the correlations between the main non-linear parameters
-# identifiability of nonlinear parameters
-save_plot_as_png(
-  paste0("nlme_", var_name, "_pairs_plot.png"),
-  quote(
-    pairs(
-      fit_model,
-      variable = c(
-        "b_Asym_Intercept",
-        "b_R0_Intercept",
-        "b_lrc_Intercept"
-      )
-    )
-  ),
-  width = 2200,
-  height = 2200
+bayesplot::mcmc_pairs(
+  fit_model, np = nuts_params(fit_model),
+  pars = c("b_logk_Intercept", "sd_animal__logk_Intercept"),
+  off_diag_args = list(size = 0.5)
 )
 
 # Residuals
@@ -371,50 +258,6 @@ save_plot_as_png(
   quote(plot(loo_var))
 )
 # loo_compare(loo1, loo2)  # compare models
-
-# Random effects
-re_df <- ranef(fit_model)$animal
-
-re_long <- bind_rows(
-  as.data.frame(re_df[, , "Asym_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "Asym"),
-  as.data.frame(re_df[, , "R0_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "R0"),
-  as.data.frame(re_df[, , "lrc_Intercept"]) %>%
-    mutate(animal = rownames(re_df), nlpar = "lrc")
-)
-
-p_re <- ggplot(re_long,
-               aes(x = reorder(animal, Estimate),
-                   y = Estimate)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = Q2.5, ymax = Q97.5),
-                width = 0) +
-  coord_flip() +
-  facet_wrap(~nlpar, scales = "free_x") +
-  theme_bw() +
-  labs(x = "Animal", y = "Random effect estimate")
-
-ggsave(
-  file.path(diag_dir, paste0("nlme_", var_name, "_random_effects.png")),
-  p_re,
-  width = 12,
-  height = 10,
-  dpi = 300
-)
-
-# Conditional effects plots
-ce <- conditional_effects(
-  fit_model,
-  effects = "stimulus0:Genotype",
-  re_formula = NA
-)
-save_plot_as_png(
-  paste0("nlme_", var_name, "_conditional_effects.png"),
-  quote(plot(ce)),
-  width = 2200,
-  height = 1800
-)
 
 # ==============================================================================
 # Save fitted model to HDD
@@ -1382,4 +1225,3 @@ ggsave(
   height = 8,
   dpi = 300
 )
-

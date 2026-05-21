@@ -1,0 +1,7 @@
+Before the analysis, write down why the aggregate approach is suspect on principled grounds. This isn't optional — reviewers want to see that you understand the difference, not just that one number is bigger.
+
+Wrong likelihood. move is Bernoulli. nls on aggregated proportions assumes Gaussian noise on the probability scale, and weighting by n_animals only partially compensates. Near 0 or 1 the variance is squashed and the Gaussian assumption breaks down.
+No partial pooling. Each Genotype × Block is fit independently with no information about animal-level variability. Animals with more trials contribute identically to animals with fewer; between-animal variance is invisible.
+No uncertainty propagation. nls gives a point estimate and a (often unreliable) Wald SE on logk. The hierarchical model gives a full posterior over A, R0, logk, derived quantities like half_life, and contrasts between genotypes/blocks.
+Boundary issues. Your nls call has hard lower/upper bounds. When the true value is near a bound, the optimizer sticks, the SE becomes meaningless, and warnOnly = TRUE silently hides it.
+Multiple testing / contrasts. Comparing genotypes with NLS means pairwise t-tests on point estimates with shaky SEs. In brms you get posterior contrasts for free.
