@@ -29,16 +29,16 @@ save_plot <- function(p, filename, width = 7, height = 5) {
 }
 # ==============================================================================
 
-source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
-source("C:/UniFreiburg/Code/R_code/susana/nlme_plot_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/nlme_plot_utils.R")
 
-# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
-# source("D:/Behavior_Data/R_code/susana/nlme_plot_utils.R")
+source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
 
 # base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
@@ -51,6 +51,10 @@ col_name = 'move'
 
 save_fig_dir = file.path(base_dir, "figs", "nlme", var_name)
 save_results_dir = file.path(base_dir, "results", "nlme", var_name)
+
+# Create directories if they do not exist
+dir.create(save_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(save_results_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ==============================================================================
 # Load and prepare data
@@ -76,43 +80,26 @@ df_resp <- df_final %>%
 # The Model
 # ==============================================================================
 model <- bf(
-  # logit(p_t) = pinf + (p0 - pinf) * exp(-k * stimulus0)
-  move ~ pinf + (p0 - pinf) * exp(-exp(lk) * stimulus0),
+  move ~ A + (R0 - A) * exp(-exp(logk) * stimulus0),
   
-  pinf ~ Genotype * Block + (1 | animal),
-  p0   ~ Genotype * Block + (1 | animal),
-  lk   ~ Genotype * Block + (1 | animal),
+  A     ~ 0 + Genotype * Block + (1 | animal), # initial response level on logit scale
+  R0    ~ 0 + Genotype * Block + (1 | animal), # final/asymptotic response level on logit scale
+  logk ~ 0 + Genotype * Block + (1 | animal),  # log decay rate: k = exp(logk), half_life = log(2) / exp(logk)
   
   nl = TRUE
 )
 
-
 # ==============================================================================
 # The Priors
 # ==============================================================================
-# Comments on Priors:
-# normal(0, 5) on logit-scale coefficients: 95% prior mass roughly between 
-# logit values of -10 and +10, which covers probabilities 
-# from ~0.00005 to ~0.99995. Effectively flat over the plausible range but rules 
-# out absurd values that would destabilize sampling.
-
-# normal(0, 2) on lk: allows k to range from 
-# exp(-4) ≈ 0.018 to exp(4) ≈ 54.6
-
-# student_t(3, 0, 2.5) on SDs: the brms/Stan default for variance components 
-# — heavy tails allow large group-level variation if the data support it, 
-# but pulls toward zero in the absence of evidence (partial pooling).
-
 priors <- c(
-  # Group coefficients (Genotype, Block, and their interactions)
-  prior(normal(0, 5), nlpar = "p0",   class = "b"),
-  prior(normal(0, 5), nlpar = "pinf", class = "b"),
-  prior(normal(0, 2), nlpar = "lk",   class = "b"),
+  prior(normal(0, 1.0), class = "b", nlpar = "A"),
+  prior(normal(1.5, 1), class = "b", nlpar = "R0"),
+  prior(normal(-3, 1), class = "b", nlpar = "logk"),
   
-  # Random effect SDs (half-t due to positivity constraint)
-  prior(student_t(3, 0, 2.5), nlpar = "p0",   class = "sd"),
-  prior(student_t(3, 0, 2.5), nlpar = "pinf", class = "sd"),
-  prior(student_t(3, 0, 2.5), nlpar = "lk",   class = "sd")
+  prior(exponential(2), class = "sd", nlpar = "A"),
+  prior(exponential(2), class = "sd", nlpar = "R0"),
+  prior(exponential(2), class = "sd", nlpar = "logk")
 )
 
 # ==============================================================================
@@ -134,6 +121,7 @@ fit_prior <- brm(
 
 
 diag_dir <- file.path(base_dir, "models",  "diagnostics", "nlme", "priors", var_name)
+dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
 
 p1 <- pp_check(fit_prior, ndraws = 100) +
   labs(title = "Prior predictive: response density")
@@ -298,7 +286,6 @@ fit_model <- fit_vi_test
 # ==============================================================================
 # Fit the model
 # ==============================================================================
-# directly on prob scale
 fit_model <- brm(
   formula = model,
   data = df_resp,
@@ -308,11 +295,19 @@ fit_model <- brm(
   chains = 4,
   cores = 4,
   threads = threading(6),
-  iter = 5000,
-  warmup = 1500,
+  iter = 3000,
+  warmup = 1000,
   seed = 42,
-  control = list(adapt_delta = 0.95, max_treedepth = 12)
+  control = list(adapt_delta = 0.90, max_treedepth = 10)
 )
+
+# identity because our formula yields the logit directly, but brms needs to 
+# know it's a probability mapping if we don't wrap it, OR use link="logit" if 
+# we wrap the right side. 
+# Alternative cleaner approach for brms logit link:
+# family = bernoulli(link = "logit"), but then the formula predicts the 
+# logit directly:
+# move ~ A + B * exp(-exp(c) * stimulus0)
 
 # ==============================================================================
 # Save fitted model to HDD
@@ -338,182 +333,30 @@ fit_summary <- summary(fit_model)
 print(fit_summary)
 sink()
 
-# ==============================================================================
-# Get diagnostics
-# ==============================================================================
-# ==== Convergence Diagnostics ====
-
-# --- Extract diagnostics as a tidy table ---
-draws_array <- as_draws_array(fit_model)
-diag_df <- summarise_draws(draws_array, default_convergence_measures())
-print(diag_df, n = Inf)
-write.csv(diag_df,
-          file.path(save_results_dir, "convergence_diagnostics.csv"),
-          row.names = FALSE)
-
-# --- Flag any problems ---
-bad_rhat <- diag_df %>% filter(rhat > 1.01)
-bad_ess  <- diag_df %>% filter(ess_bulk < 400 | ess_tail < 400)
-
-cat("\nParameters with R-hat > 1.01:", nrow(bad_rhat), "\n")
-cat("Parameters with ESS < 400:    ", nrow(bad_ess),  "\n")
-
-# --- HMC diagnostics: divergences, treedepth, energy ---
-np <- nuts_params(fit_model)
-cat("\nDivergent transitions:", sum(subset(np, Parameter == "divergent__")$Value), "\n")
-cat("Max treedepth hits:    ", sum(subset(np, Parameter == "treedepth__")$Value >= 12), "\n")
-
-# ==== Trace Plots ====
-# --- Trace plots for key parameters ---
-trace_pars <- variables(fit_model)[grepl("^b_|^sd_", variables(fit_model))]
-
-p_trace <- mcmc_trace(fit_model, pars = trace_pars[1:min(12, length(trace_pars))]) +
-  ggtitle("Trace plots (first 12 fixed/SD parameters)")
-save_plot(p_trace, "10_trace_plots.png", width = 12, height = 8)
-
-# --- Rank plots: alternative to trace, often more sensitive ---
-p_rank <- mcmc_rank_overlay(fit_model, pars = trace_pars[1:min(6, length(trace_pars))]) +
-  ggtitle("Rank plots")
-save_plot(p_rank, "11_rank_plots.png", width = 12, height = 8)
-
-# --- Pairs plot for the intercepts (catches funnel-y geometry) ---
-p_pairs <- mcmc_pairs(
-  fit_model,
-  pars = c("b_p0_Intercept", "b_pinf_Intercept", "b_lk_Intercept"),
-  off_diag_args = list(size = 0.5, alpha = 0.3)
-)
-save_plot(p_pairs, "12_pairs_intercepts.png", width = 9, height = 9)
-
-# ==== Posterior Predictive Checks ====
-# --- Overall fit: predicted vs observed response density ---
-p_ppc_dens <- pp_check(fit_model, ndraws = 100) +
-  ggtitle("Posterior predictive: response density")
-save_plot(p_ppc_dens, "20_ppc_density.png")
-
-# --- Mean response per stimulus: KEY check for habituation models ---
-p_ppc_stim <- pp_check(fit_model, type = "stat_grouped",
-                       group = "stimulus0", stat = "mean", ndraws = 200) +
-  ggtitle("Posterior predictive: mean response per stimulus")
-save_plot(p_ppc_stim, "21_ppc_mean_per_stimulus.png", width = 12, height = 8)
-
-# --- Mean response per genotype × block ---
-df_resp$geno_block <- interaction(df_resp$Genotype, df_resp$Block, drop = TRUE)
-p_ppc_grp <- pp_check(fit_model, type = "stat_grouped",
-                      group = "geno_block", stat = "mean", ndraws = 200) +
-  ggtitle("Posterior predictive: mean response per group")
-save_plot(p_ppc_grp, "22_ppc_mean_per_group.png", width = 12, height = 8)
-
-# --- Per-animal check (subset for readability) ---
-animals_subset <- sample(levels(df_resp$animal), min(20, nlevels(df_resp$animal)))
-df_subset_idx  <- df_resp$animal %in% animals_subset
-p_ppc_anim <- pp_check(fit_model, type = "stat_grouped",
-                       group = "animal", stat = "mean", ndraws = 100,
-                       newdata = df_resp[df_subset_idx, ]) +
-  ggtitle("Posterior predictive: per-animal mean (subset)")
-save_plot(p_ppc_anim, "23_ppc_per_animal.png", width = 14, height = 10)
-
-# ==== Bayesian R² and LOO ====
-# --- Bayesian R² ---
-r2 <- bayes_R2(fit_model)
-print(r2)
-write.csv(r2, file.path(save_results_dir, "bayes_R2.csv"))
-
-# --- LOO cross-validation ---
-loo_result <- loo(fit_model)
-print(loo_result)
-
-# Save LOO summary
-sink(file.path(save_results_dir, "loo_summary.txt"))
-print(loo_result)
-sink()
-
-# Check for problematic observations
-pareto_k <- loo_result$diagnostics$pareto_k
-cat("\nPareto k > 0.7 (problematic):", sum(pareto_k > 0.7), "\n")
-cat("Pareto k > 1.0 (very bad):    ", sum(pareto_k > 1.0), "\n")
-
-# ==============================================================================
-# --- Build prediction grid ---
-new_data <- expand_grid(
-  stimulus0 = 0:max(df_resp$stimulus0),
-  Genotype  = levels(df_resp$Genotype),
-  Block     = levels(df_resp$Block)
-) %>%
-  mutate(
-    stimulus = stimulus0 + 1,
-    animal   = NA  # population-level
-  )
-
-# --- Get posterior expected values (probabilities), marginalizing over animals ---
-pred <- new_data %>%
-  add_epred_draws(fit_model, re_formula = NA, ndraws = 1000) %>%
-  group_by(Genotype, Block, stimulus0) %>%
-  summarise(
-    mean   = mean(.epred),
-    median = median(.epred),
-    lower  = quantile(.epred, 0.025),
-    upper  = quantile(.epred, 0.975),
-    lower50 = quantile(.epred, 0.25),
-    upper50 = quantile(.epred, 0.75),
-    .groups = "drop"
-  )
-
-# --- Compute empirical means per stimulus × group for overlay ---
-emp <- df_resp %>%
-  group_by(Genotype, Block, stimulus0) %>%
-  summarise(
-    p_obs = mean(move),
-    n     = n(),
-    .groups = "drop"
-  )
-
-# --- Main habituation curve plot ---
-p_curves <- ggplot(pred, aes(x = stimulus0)) +
-  geom_ribbon(aes(ymin = lower, ymax = upper, fill = Genotype), alpha = 0.2) +
-  geom_ribbon(aes(ymin = lower50, ymax = upper50, fill = Genotype), alpha = 0.35) +
-  geom_line(aes(y = mean, color = Genotype), linewidth = 1) +
-  geom_point(data = emp, aes(y = p_obs, color = Genotype, size = n),
-             alpha = 0.5, show.legend = TRUE) +
-  scale_size_continuous(range = c(0.5, 2.5), name = "n trials") +
-  facet_grid(Block ~ Genotype) +
-  labs(
-    title    = "Posterior habituation curves",
-    subtitle = "Ribbons: 50% and 95% credible intervals. Points: observed proportions.",
-    x = "Stimulus number (0-indexed)",
-    y = "P(response)"
-  ) +
-  ylim(0, 1) +
-  theme_minimal() +
-  theme(legend.position = "bottom")
-
-save_plot(p_curves, "30_habituation_curves.png", width = 14, height = 7)
-
-
+posterior_summary(fit_model, pars = "^b_A")
+posterior_summary(fit_model, pars = "^b_R0")
+posterior_summary(fit_model, pars = "^b_logk")
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-save_fig_dir = NULL
-
-p_prob <- plot_habituation_probability(
+save_fig_dir <- NULL
+p_hab <- plot_habituation_probability(
   df_resp = df_resp,
   fit_model = fit_model,
-  save_dir = save_fig_dir,
+  save_fig_dir = save_fig_dir,
   var_name = var_name
 )
 
-p_prob_raw <- plot_habituation_probability_raw(
+p_hab
+
+p_latent <- plot_habituation_latent(
   df_resp = df_resp,
   fit_model = fit_model,
-  save_dir = save_fig_dir,
+  save_fig_dir = save_fig_dir,
   var_name = var_name
 )
 
-p_logit_raw <- plot_habituation_logit_raw(
-  df_resp = df_resp,
-  fit_model = fit_model,
-  save_dir = save_fig_dir,
-  var_name = var_name
-)
+p_latent
 
 # ==============================================================================
 # Compare nonlinear model parameters
