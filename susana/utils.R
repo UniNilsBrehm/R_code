@@ -978,3 +978,263 @@ compare_nlpar <- function(draws_df, value_name, rope = 0.2, ratio = FALSE) {
   
   list(draws = comp, summary = summary)
 }
+
+# ==============================================================================
+# Validate Priors
+# ==============================================================================
+validate_response_prob_priors <- function(fit_prior_only, def_resp, col_name){
+
+  # Visual Prior Predictive Checks for Binary Data
+  ppc_bars(
+    y = df_resp[[col_name]], 
+    yrep = posterior_predict(fit_prior_only, ndraws = 50)
+  ) + 
+    ggtitle("Prior Predictive Check: Counts of 0s and 1s")
+  
+  # PROPORTION STAT instead of Mean/Max: Checks if the predicted probability 
+  # of a response (y = 1) matches reality.
+  # We define a custom function to calculate the mean (which equals the proportion of 1s)
+  prop_one <- function(x) mean(x == 1)
+  
+  ppc_stat(
+    y = df_resp[[col_name]], 
+    yrep = posterior_predict(fit_prior_only, ndraws = 200), 
+    stat = "prop_one"
+  ) +
+    ggtitle("Prior Predictive Check: Proportion of Responses (1s)")
+  
+  # 3. Analytically Prior Validation (Logit Scale Simulation)
+  # Clear the old simulations just to be safe
+  rm(list = c("sim_asym", "sim_r0")[sapply(c("sim_asym", "sim_r0"), exists)])
+  
+  # Simulate 10,000 draws using the updated priors: normal(1.1, 1.0)
+  sim_asym <- plogis(rnorm(10000, mean = 1.1, sd = 1.0))
+  sim_r0   <- plogis(rnorm(10000, mean = 1.1, sd = 1.0))
+  
+  # Check the new probability quantiles
+  print("UPDATED Prior Probability Quantiles for Asym (0.025, 0.5, 0.975):")
+  print(quantile(sim_asym, probs = c(0.025, 0.5, 0.975)))
+  
+  print("UPDATED Prior Probability Quantiles for R0 (0.025, 0.5, 0.975):")
+  print(quantile(sim_r0, probs = c(0.025, 0.5, 0.975)))
+  
+  
+  # 4. Diagnostic & Effect Plots
+  # MCMC density plot of the prior distributions
+  mcmc_plot(fit_prior_only, type = "dens")
+  
+  # Plot the conditional effects implied ONLY by your priors
+  plot(conditional_effects(fit_prior_only), ask = FALSE)
+}
+
+validate_gamma_model_priors <- function(fit_prior_only, df_resp, col_name){
+  # Prior predictive check for Gamma response
+  yrep_prior <- posterior_predict(fit_prior_only, ndraws = 50)
+  
+  pp <- ppc_dens_overlay(
+    y = df_resp[[col_name]],
+    yrep = yrep_prior
+  ) +
+    scale_x_continuous(trans = scales::pseudo_log_trans(base = 10))
+  
+  print(pp)
+  
+  # Analytically Prior Validation 
+  rm(list = intersect(c("sim_asym", "sim_r0", "sim_lrc", "sim_k"), ls()))
+  set.seed(42)
+  
+  # Match to current priors
+  #   # Fixed Effects (Shifted mean to 1.25 to center near data median)
+  #   set_prior("normal(1.25, 1)", nlpar = "Asym", class = "b"),
+  #   set_prior("normal(1.25, 1)", nlpar = "R0", class = "b"),
+  #   set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"), # Keeps your gradual decay
+  #   
+  #   # Random Effects (Slightly restricted to prevent extreme animal-level explosions)
+  #   set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
+  #   set_prior("exponential(2)", nlpar = "R0", class = "sd"),
+  #   set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
+  #   
+  #   # Shape parameter for Gamma variance
+  #   set_prior("exponential(1)", class = "shape")
+  #   
+  sim_asym <- exp(rnorm(10000, mean = 1.25, sd = 1.0))
+  sim_r0   <- exp(rnorm(10000, mean = 1.25, sd = 1.0))
+  
+  # lrc is still log-rate; k = exp(lrc)
+  sim_lrc <- rnorm(10000, mean = -1.5, sd = 1.0)
+  sim_k   <- exp(sim_lrc)
+  
+  print("Prior response-scale quantiles for Asym:")
+  print(quantile(sim_asym, probs = c(0.025, 0.5, 0.975)))
+  
+  print("Prior response-scale quantiles for R0:")
+  print(quantile(sim_r0, probs = c(0.025, 0.5, 0.975)))
+  
+  print("Prior habituation-rate quantiles for k = exp(lrc):")
+  print(quantile(sim_k, probs = c(0.025, 0.5, 0.975)))
+  
+  print("Prior half-life quantiles, log(2) / k:")
+  print(quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975)))
+}
+
+# ==============================================================================
+# Get summary and diagnostics for Repsons Prob Model
+# ==============================================================================
+  compute_diagnostics <- function(fit_model, diag_dir, var_name){
+    
+  # R2
+  bayes_R2(fit_model)
+  
+  # Trace plots
+  trace_plots <- plot(fit_model, ask = FALSE)
+  for (i in seq_along(trace_plots)) {
+    ggsave(
+      filename = file.path(
+        diag_dir,
+        paste0("nlme_", var_name, "_traceplot_", i, ".png")
+      ),
+      plot = trace_plots[[i]],
+      width = 12,
+      height = 8,
+      bg = "white",
+      dpi = 300,
+    )
+  }
+  
+  # Posterior predictive checks
+  p1 <- pp_check(fit_model, ndraws = 100)
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_default.png")),
+    p1,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300,
+  )
+  
+  
+  p2 <- pp_check(
+    fit_model,
+    type = "dens_overlay",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name,"_densed_overlay.png")),
+    p2,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  p3 <- pp_check(
+    fit_model,
+    type = "hist",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir,paste0("nlme_", var_name,"hist.png")),
+    p3,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  p4 <- pp_check(
+    fit_model,
+    type = "ecdf_overlay",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_ecdf.png")),
+    p4,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  p5 <- pp_check(
+    fit_model,
+    type = "stat_grouped",
+    group = "stimulus0",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name,"_ppcheck_stimulus.png")),
+    p5,
+    width = 12,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  p6 <- pp_check(
+    fit_model,
+    type = "stat_grouped",
+    group = "Genotype",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_genotype.png")),
+    p6,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  p7 <- pp_check(
+    fit_model,
+    type = "stat_grouped",
+    group = "Block",
+    ndraws = 100
+  )
+  
+  ggsave(
+    file.path(diag_dir, paste0("nlme_", var_name, "_ppcheck_block.png")),
+    p7,
+    width = 10,
+    height = 8,
+    bg = "white",
+    dpi = 300
+  )
+  
+  
+  # Residuals
+  yrep <- posterior_predict(fit_model, ndraws = 200)
+  
+  sim_res <- createDHARMa(
+    simulatedResponse = t(yrep),
+    observedResponse = df_resp$move,
+    fittedPredictedResponse = fitted(fit_model)[, "Estimate"]
+  )
+  
+  save_plot_as_png(
+    paste0("nlme_", var_name, "_DHARMa_residuals.png"),
+    quote(plot(sim_res))
+  )
+  
+  # Compute leave-one-out cross-validation:
+  loo_sum <- loo(fit_model, cores=4)
+  print(loo_sum)
+  saveRDS(
+    loo_sum,
+    file.path(diag_dir,paste0("nlme_", var_name,"_loo.rds"))
+  )
+  save_plot_as_png(
+    paste0("nlme_", var_name, "_loo_plot.png"),
+    quote(plot(loo_sum))
+  )
+}  

@@ -58,12 +58,25 @@ any(df_resp[[col_name]] <= 0, na.rm = TRUE)
 # ==============================================================================
 # The Model
 # ==============================================================================
+# model <- bf(
+#   as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
+#   
+#   Asym ~ Genotype * Block + (1 | animal),
+#   R0   ~ Genotype * Block + (1 | animal),
+#   lrc  ~ Genotype * Block + (1 | animal),
+#   
+#   nl = TRUE
+# )
+
 model <- bf(
-  as.formula(paste0(col_name, " ~ Asym + (R0 - Asym) * exp(-exp(lrc) * stimulus0)")),
+  as.formula(paste0(
+    col_name, " ~ exp(logAsym) + ",
+    "(exp(logR0) - exp(logAsym)) * exp(-exp(lrc) * stimulus0)"
+  )),
   
-  Asym ~ Genotype * Block + (1 | animal),
-  R0   ~ Genotype * Block + (1 | animal),
-  lrc  ~ Genotype * Block + (1 | animal),
+  logAsym ~ Genotype * Block + (1 | animal),
+  logR0   ~ Genotype * Block + (1 | animal),
+  lrc      ~ Genotype * Block + (1 | animal),
   
   nl = TRUE
 )
@@ -71,20 +84,40 @@ model <- bf(
 # ==============================================================================
 # The Priors
 # ==============================================================================
+# priors <- c(
+#   
+#   # asymptotic response
+#   set_prior("normal(log(1.5), 0.3)", nlpar = "Asym", class = "b"),
+#   
+#   # initial response
+#   set_prior("normal(log(8), 0.4)", nlpar = "R0", class = "b"),
+#   
+#   # decay rate
+#   set_prior("normal(-1.5, 0.5)", nlpar = "lrc", class = "b"),
+#   
+#   # random effects
+#   set_prior("exponential(3)", nlpar = "Asym", class = "sd"),
+#   set_prior("exponential(3)", nlpar = "R0", class = "sd"),
+#   set_prior("exponential(3)", nlpar = "lrc", class = "sd"),
+#   
+#   # gamma shape
+#   set_prior("exponential(1)", class = "shape")
+# )
+
 priors <- c(
-  # Fixed Effects (Shifted mean to 1.25 to center near data median)
-  set_prior("normal(1.25, 1)", nlpar = "Asym", class = "b"),
-  set_prior("normal(1.25, 1)", nlpar = "R0", class = "b"),
-  set_prior("normal(-1.5, 1)", nlpar = "lrc", class = "b"), # Keeps your gradual decay
+  set_prior("normal(log(1.2), 0.3)", nlpar = "logAsym", class = "b", coef = "Intercept"),
+  set_prior("normal(log(4.5), 0.35)", nlpar = "logR0", class = "b", coef = "Intercept"),
+  set_prior("normal(-1.5, 0.45)", nlpar = "lrc", class = "b", coef = "Intercept"),
   
-  # Random Effects (Slightly restricted to prevent extreme animal-level explosions)
-  set_prior("exponential(2)", nlpar = "Asym", class = "sd"),
-  set_prior("exponential(2)", nlpar = "R0", class = "sd"),
-  set_prior("exponential(2)", nlpar = "lrc", class = "sd"),
+  set_prior("normal(0, 0.35)", nlpar = "logAsym", class = "b"),
+  set_prior("normal(0, 0.35)", nlpar = "logR0", class = "b"),
+  set_prior("normal(0, 0.35)", nlpar = "lrc", class = "b"),
   
-  # Shape parameter for Gamma variance
-  set_prior("exponential(1)", class = "shape")
+  set_prior("exponential(8)", nlpar = "logAsym", class = "sd"),
+  set_prior("exponential(8)", nlpar = "logR0", class = "sd"),
+  set_prior("exponential(8)", nlpar = "lrc", class = "sd"),
   
+  set_prior("gamma(20, 2)", class = "shape")
 )
 
 # ==============================================================================
@@ -93,52 +126,25 @@ priors <- c(
 fit_prior_only <- brm(
   formula = model,
   data = df_resp,
-  family = Gamma(link = "log"),
+  family = Gamma(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   chains = 4,
   cores = 4,
-  iter = 2000,          
+  iter = 2000,
   warmup = 1000,
   seed = 42,
-  sample_prior = "only" 
+  sample_prior = "only"
 )
 
-# Prior predictive check for Gamma response
-yrep_prior <- posterior_predict(fit_prior_only, ndraws = 50)
+ep <- posterior_epred(fit_prior_only, ndraws = 500)
 
-ppc_dens_overlay(
-  y = df_resp[[col_name]],
-  yrep = yrep_prior
-) +
-  scale_x_log10() +
-  ggtitle("Prior Predictive Check: Density Overlay")
+quantile(as.vector(ep), c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
+quantile(df_resp[[col_name]], c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
 
-# Analytically Prior Validation (Logit Scale Simulation)
-# ==============================================================================
-rm(list = intersect(c("sim_asym", "sim_r0", "sim_lrc", "sim_k"), ls()))
-
-set.seed(42)
-
-# Match your current priors
-sim_asym <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
-sim_r0   <- exp(rnorm(10000, mean = 1.1, sd = 1.0))
-
-# lrc is still log-rate; k = exp(lrc)
-sim_lrc <- rnorm(10000, mean = -1.5, sd = 1.0)
-sim_k   <- exp(sim_lrc)
-
-print("Prior response-scale quantiles for Asym:")
-quantile(sim_asym, probs = c(0.025, 0.5, 0.975))
-
-print("Prior response-scale quantiles for R0:")
-quantile(sim_r0, probs = c(0.025, 0.5, 0.975))
-
-print("Prior habituation-rate quantiles for k = exp(lrc):")
-quantile(sim_k, probs = c(0.025, 0.5, 0.975))
-
-print("Prior half-life quantiles, log(2) / k:")
-quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975))
+prior_draws <- as_draws_df(fit_prior_only)
+summary(prior_draws$`b_logR0_Intercept`)
+summary(prior_draws$`sd_animal__logR0_Intercept`)
 
 # ==============================================================================
 # Fit Fast Test Model
@@ -146,14 +152,14 @@ quantile(log(2) / sim_k, probs = c(0.025, 0.5, 0.975))
 # Step 1: Create a tiny xx% subset of your data for rapid prototyping
 df_test_sub <- df_resp %>% 
   group_by(Genotype, Block) %>% 
-  slice_sample(prop = 0.75) %>% 
+  slice_sample(prop = 0.95) %>% 
   ungroup()
 
 # Step 2: Fit using Meanfield Variational Inference (VI)
 fit_vi_test <- brm(
   formula = model,
   data = df_test_sub ,
-  family = Gamma(link = "log"),
+  family = Gamma(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "meanfield",          # <--- Reliable, fast VI method
@@ -182,7 +188,7 @@ fit_model <- fit_vi_test
 fit_model <- brm(
   formula = model,
   data = df_resp,
-  family = Gamma(link = "log"),
+  family = Gamma(link = "identity"),
   prior = priors,
   
   backend = "cmdstanr",
@@ -191,8 +197,8 @@ fit_model <- brm(
   cores = 4,
   threads = threading(6),
   
-  iter = 2000,
-  warmup = 1000,
+  iter = 4000,
+  warmup = 1500,
   seed = 42,
   
   control = list(
