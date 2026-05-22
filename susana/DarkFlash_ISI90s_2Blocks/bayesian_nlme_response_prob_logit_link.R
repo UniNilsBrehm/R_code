@@ -29,18 +29,18 @@ save_plot <- function(p, filename, width = 7, height = 5) {
 }
 # ==============================================================================
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
 # source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
 # source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
 
-# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
-# source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
@@ -81,18 +81,7 @@ df_resp <- df_final %>%
 # ==============================================================================
 # The Model
 # ==============================================================================
-model_logit <- bf(
-  move ~ A + (R0 - A) * exp(-exp(logk) * stimulus0),
-  
-  A     ~ 0 + Genotype * Block + (1 | animal), # final/asymptotic response level on logit scale
-  R0    ~ 0 + Genotype * Block + (1 | animal), # initial response level on logit scale
-  logk ~ 0 + Genotype * Block + (1 | animal),  # log decay rate: k = exp(logk), half_life = log(2) / exp(logk)
-  
-  nl = TRUE
-)
-
-# on the prob scale
-model_identity <- bf(
+model <- bf(
   move ~ inv_logit(A) +
     (inv_logit(R0) - inv_logit(A)) *
     exp(-exp(logk) * stimulus0),
@@ -123,7 +112,7 @@ priors <- c(
 fit_prior <- brm(
   formula = model,
   data = df_resp,
-  family = bernoulli(link = "logit"),
+  family = bernoulli(link = "identity"),
   prior = priors,
   sample_prior = "only",          # <-- key change
   backend = "cmdstanr",
@@ -138,142 +127,14 @@ fit_prior <- brm(
 diag_dir <- file.path(base_dir, "models",  "diagnostics", "nlme", "priors", var_name)
 dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
 
-p1 <- pp_check(fit_prior, ndraws = 100) +
-  labs(title = "Prior predictive: response density")
-save_plot(p1, "01_prior_ppc_density.png")
+ep <- posterior_epred(fit_prior, ndraws = 500)
 
-p2 <- pp_check(fit_prior, type = "stat_grouped", group = "stimulus0",
-               stat = "mean", ndraws = 200) +
-  labs(title = "Prior predictive: mean response per stimulus")
-save_plot(p2, "02_prior_ppc_mean_per_stimulus.png", width = 10, height = 7)
+quantile(as.vector(ep), c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
+quantile(df_resp[[col_name]], c(.001,.01,.05,.5,.95,.99,.999), na.rm = TRUE)
 
-new_data <- expand_grid(
-  stimulus0 = 0:max(df_resp$stimulus0),
-  Genotype  = levels(df_resp$Genotype),
-  Block     = levels(df_resp$Block)
-) %>%
-  mutate(animal = NA)
+prior_draws <- as_draws_df(fit_prior)
+summary(prior_draws)
 
-draws <- posterior_epred(
-  fit_prior,
-  newdata    = new_data,
-  re_formula = NA,
-  ndraws     = 200
-)
-
-plot_df <- as.data.frame(t(draws)) %>%
-  bind_cols(new_data) %>%
-  pivot_longer(
-    cols = starts_with("V"),
-    names_to  = "draw",
-    values_to = "p_response"
-  )
-
-p3 <- ggplot(plot_df, aes(x = stimulus0, y = p_response, group = draw)) +
-  geom_line(alpha = 0.1, color = "steelblue") +
-  facet_grid(Block ~ Genotype) +
-  labs(
-    title = "Prior predictive habituation curves",
-    x = "Stimulus number (0-indexed)",
-    y = "P(response)"
-  ) +
-  ylim(0, 1) +
-  theme_minimal()
-save_plot(p3, "03_prior_curves_by_group.png", width = 10, height = 7)
-
-prior_samples <- as_draws_df(fit_prior)
-
-p4 <- prior_samples %>%
-  mutate(k = exp(b_lk_Intercept)) %>%
-  ggplot(aes(x = k)) +
-  geom_density(fill = "steelblue", alpha = 0.5) +
-  scale_x_log10() +
-  labs(title = "Prior on decay rate k (log scale)", x = "k")
-save_plot(p4, "04_prior_k_density.png")
-
-p5 <- prior_samples %>%
-  transmute(
-    p0_prob   = plogis(b_p0_Intercept),
-    pinf_prob = plogis(b_pinf_Intercept)
-  ) %>%
-  pivot_longer(everything()) %>%
-  ggplot(aes(x = value, fill = name)) +
-  geom_density(alpha = 0.5) +
-  labs(title = "Prior on initial and asymptotic response probability",
-       x = "Probability")
-save_plot(p5, "05_prior_p0_pinf_density.png")
-
-param_summary <- prior_samples %>%
-  transmute(
-    p0_prob    = plogis(b_p0_Intercept),
-    pinf_prob  = plogis(b_pinf_Intercept),
-    k          = exp(b_lk_Intercept),
-    half_life  = log(2) / exp(b_lk_Intercept)  # stimuli to halve gap
-  ) %>%
-  pivot_longer(everything(), names_to = "param") %>%
-  group_by(param) %>%
-  summarise(
-    mean    = mean(value),
-    median  = median(value),
-    q025    = quantile(value, 0.025),
-    q25     = quantile(value, 0.25),
-    q75     = quantile(value, 0.75),
-    q975    = quantile(value, 0.975),
-    .groups = "drop"
-  )
-
-print(param_summary)
-write.csv(param_summary,
-          file.path(diag_dir, "prior_param_summary.csv"),
-          row.names = FALSE)
-
-curve_summary <- plot_df %>%
-  group_by(Genotype, Block, stimulus0) %>%
-  summarise(
-    mean   = mean(p_response),
-    median = median(p_response),
-    q025   = quantile(p_response, 0.025),
-    q25    = quantile(p_response, 0.25),
-    q75    = quantile(p_response, 0.75),
-    q975   = quantile(p_response, 0.975),
-    .groups = "drop"
-  )
-
-# How wide is the 95% prior predictive interval at each stimulus?
-interval_widths <- curve_summary %>%
-  mutate(width_95 = q975 - q025) %>%
-  group_by(stimulus0) %>%
-  summarise(mean_width_95 = mean(width_95))
-
-print(interval_widths)
-write.csv(curve_summary,
-          file.path(diag_dir, "prior_curve_summary.csv"),
-          row.names = FALSE)
-
-# For each draw, compute key features per group
-per_draw_features <- plot_df %>%
-  group_by(draw, Genotype, Block) %>%
-  summarise(
-    p_first      = p_response[stimulus0 == 0],
-    p_last       = p_response[stimulus0 == max(stimulus0)],
-    decrease     = p_first - p_last,
-    decreasing   = p_first > p_last,
-    .groups = "drop"
-  )
-
-feature_summary <- per_draw_features %>%
-  summarise(
-    pct_decreasing       = mean(decreasing),
-    pct_strong_habituate = mean(decrease > 0.2),
-    pct_no_change        = mean(abs(decrease) < 0.05),
-    pct_increasing       = mean(decrease < -0.05),
-    median_decrease      = median(decrease)
-  )
-
-print(feature_summary)
-write.csv(feature_summary,
-          file.path(diag_dir, "prior_feature_summary.csv"),
-          row.names = FALSE)
 
 # ==============================================================================
 # Fit Fast Test Model
@@ -288,7 +149,7 @@ df_test_sub <- df_resp %>%
 fit_vi_test <- brm(
   formula = model,
   data = df_resp,               
-  family = bernoulli(link = "logit"),
+  family = bernoulli(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "meanfield",          # <--- Reliable, fast VI method
@@ -299,7 +160,7 @@ fit_vi_test <- brm(
 fit_vi_fullrank <- brm(
   formula = model,
   data = df_resp,
-  family = bernoulli(link = "logit"),
+  family = bernoulli(link = "identity"),
   prior = priors,
   backend = "cmdstanr",
   algorithm = "fullrank",
@@ -307,29 +168,9 @@ fit_vi_fullrank <- brm(
   seed = 42
 )
 
-fit_nuts_debug <- brm(
-  formula = model_logit,
-  data = df_resp,
-  family = bernoulli(link = "logit"),
-  # family = bernoulli(link = "identity"),
-  prior = priors,
-  backend = "cmdstanr",
-  chains = 1,
-  cores = 1,
-  threads = threading(6),
-  iter = 600,
-  warmup = 300,
-  seed = 42,
-  control = list(
-    adapt_delta = 0.90,
-    max_treedepth = 10
-  )
-)
-
 fit_nuts_test <- brm(
   formula = model,
   data = df_resp,
-  # family = bernoulli(link = "logit"),
   family = bernoulli(link = "identity"),
   prior = priors,
   save_pars = save_pars(all = TRUE),
@@ -351,77 +192,7 @@ fit_model <- fit_vi_test
 
 fit_model <- fit_vi_fullrank
 
-fit_model <- fit_nuts_debug 
-
 fit_model <- fit_nuts_test
-
-# Compare models
-loo_logit <- loo(fit_logit, moment_match = TRUE)
-loo_identity <- loo(fit_identity, moment_match = TRUE)
-
-print(loo_logit)
-print(loo_identity)
-
-loo_compare(loo_logit, loo_identity)
-
-pp_check(fit_logit)
-pp_check(fit_identity)
-
-# Very slow
-kfold_logit <- kfold(fit_logit, K = 10)
-kfold_identity <- kfold(fit_identity, K = 10)
-
-loo_compare(kfold_logit, kfold_identity)
-
-# How much and where do they differ:
-new_resp <- df_resp %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    stim_min = min(stimulus, na.rm = TRUE),
-    stim_max = max(stimulus, na.rm = TRUE),
-    .groups = "drop"
-  ) %>%
-  reframe(
-    stimulus = seq(stim_min, stim_max, length.out = 200),
-    .by = c(Genotype, Block)
-  ) %>%
-  mutate(
-    stimulus0 = stimulus - 1,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-pred_logit <- fitted(fit_logit, newdata = new_resp, re_formula = NA)
-pred_identity <- fitted(fit_identity, newdata = new_resp, re_formula = NA)
-
-compare_pred <- new_resp %>%
-  bind_cols(
-    logit_fit = pred_logit[, "Estimate"],
-    identity_fit = pred_identity[, "Estimate"]
-  ) %>%
-  mutate(
-    difference = logit_fit - identity_fit
-  )
-
-summary(compare_pred$difference)
-
-ggplot(compare_pred, aes(x = stimulus, y = difference)) +
-  facet_grid(Block ~ Genotype) +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_line() +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Stimulus number",
-    y = "Predicted probability difference: logit - identity",
-    title = "Difference between logit-link and identity-link model predictions"
-  )
-
-bf_logit_vs_identity <- bayes_factor(
-  fit_logit,
-  fit_identity
-)
-
-print(bf_logit_vs_identity)
 
 # ==============================================================================
 # Fit the model
@@ -440,6 +211,7 @@ fit_model <- brm(
   seed = 42,
   control = list(adapt_delta = 0.90, max_treedepth = 10),
   init    = 0,                        # important for nonlinear models
+  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
 )
 
 
@@ -470,6 +242,7 @@ sink()
 posterior_summary(fit_model, pars = "^b_A")
 posterior_summary(fit_model, pars = "^b_R0")
 posterior_summary(fit_model, pars = "^b_logk")
+
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
@@ -511,7 +284,6 @@ print(p_animal_avg)
 # ==============================================================================
 # 1. Compare habituation rate k = exp(lk)
 # ==============================================================================
-
 k_draws_df <- make_nlpar_draws(
   fit_model = fit_model,
   df_resp = df_resp,

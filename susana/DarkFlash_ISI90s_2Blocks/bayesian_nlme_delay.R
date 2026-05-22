@@ -15,12 +15,17 @@ library(DHARMa)
 library(bayesplot)
 
 # source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/utils.R")
-source("D:/Behavior_Data/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
+
+source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <-
 
 file_dir <- file.path(
   base_dir,
@@ -60,12 +65,7 @@ is.ordered(df_resp[[col_name]])
 # The Model
 # ==============================================================================
   model <- bf(
-    as.formula(
-      paste0(
-        col_name,
-        " ~ R0 + (4 - R0) * stimulus0 / (exp(logK) + stimulus0)"
-      )
-    ),
+    as.formula(paste0(col_name, " ~ R0 + (4 - R0) * stimulus0 / (exp(logK) + stimulus0)")),
     
     R0   ~ Genotype * Block + (1 | animal),
     logK ~ Genotype * Block + (1 | animal),

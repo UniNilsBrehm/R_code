@@ -38,6 +38,7 @@ plot_habituation_probability <- function(
     fit_model,
     newdata = new_resp,
     re_formula = NA,
+    # robust = TRUE,  # use median
     summary = TRUE
   )
   
@@ -84,6 +85,7 @@ plot_habituation_probability <- function(
         aes(
           x = stimulus,
           y = response_prob,
+          # size = n,  # show number of animals as dot size
           color = Genotype
         ),
         inherit.aes = FALSE,
