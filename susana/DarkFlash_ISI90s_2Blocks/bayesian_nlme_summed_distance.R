@@ -79,7 +79,7 @@ ggplot(df_resp, aes(x = .data[[col_name]])) +
 # ==============================================================================
 model <- bf(
   max_cumsum ~ exp(A) + (exp(R0) - exp(A)) * exp(-exp(logk) * stimulus0),
-  A    ~ 1 + Genotype * Block + (1 | animal),   # <-- 1 +
+  A    ~ 1 + Genotype * Block + (1 | animal),
   R0   ~ 1 + Genotype * Block + (1 | animal),
   logk ~ 1 + Genotype * Block + (1 | animal),
   nl = TRUE
@@ -89,18 +89,21 @@ model <- bf(
 # The Priors
 # ==============================================================================
 priors <- c(
-  # Reference cell baseline
-  prior(normal(2.0, 0.5),  nlpar = "R0",   class = "b", coef = "Intercept"),
-  prior(normal(0.5, 0.5),  nlpar = "A",    class = "b", coef = "Intercept"),
-  prior(normal(-2.3, 0.4), nlpar = "logk", class = "b", coef = "Intercept"),
-  # Deviations from reference (all genotype contrasts, block, interactions)
-  prior(normal(0, 0.5), nlpar = "R0",   class = "b"),
-  prior(normal(0, 0.5), nlpar = "A",    class = "b"),
-  prior(normal(0, 0.3), nlpar = "logk", class = "b"),
-  # Animal REs
+  # Reference cell baseline - shifted up by ~log(2) for summed_distance
+  prior(normal(2.7, 0.3),  nlpar = "R0",   class = "b", coef = "Intercept"),  # was 2.0
+  prior(normal(1.2, 0.3),  nlpar = "A",    class = "b", coef = "Intercept"),  # was 0.5
+  prior(normal(-2.3, 0.4), nlpar = "logk", class = "b", coef = "Intercept"),  # unchanged
+  
+  # Deviations from reference (unchanged - still on log scale)
+  prior(normal(0, 0.2), nlpar = "R0",   class = "b"),
+  prior(normal(0, 0.2), nlpar = "A",    class = "b"),
+  prior(normal(0, 0.2), nlpar = "logk", class = "b"),
+  
+  # Animal REs (unchanged)
   prior(student_t(3, 0, 0.2), nlpar = "R0",   class = "sd"),
   prior(student_t(3, 0, 0.2), nlpar = "A",    class = "sd"),
   prior(student_t(3, 0, 0.2), nlpar = "logk", class = "sd"),
+  
   prior(gamma(2, 0.1), class = "shape")
 )
 
@@ -174,16 +177,31 @@ fit_model <- brm(
   family  = Gamma(link = "identity"),
   prior   = priors,
   save_pars = save_pars(all = TRUE),
-  recompile = TRUE,
   chains  = 4, 
   cores = 4,
   threads = threading(6),
   iter    = 4000, 
-  warmup = 1500,
-  control = list(adapt_delta = 0.95, max_treedepth = 12),
+  warmup = 2000,
+  control = list(adapt_delta = 0.99, max_treedepth = 15),
   init    = 0,
   backend = "cmdstanr"
 )
+
+# ==============================================================================
+# Save fitted model to HDD
+# ==============================================================================
+saveRDS(
+  fit_model,
+  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
+)
+
+# ==============================================================================
+# Load fitted model if available
+# ==============================================================================
+fit_model <- readRDS(
+  file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
+)
+
 
 # ==============================================================================
 # Get summary and diagnostics
@@ -237,21 +255,30 @@ bayesplot::mcmc_pairs(
 )
 
 # Residuals
-yrep <- posterior_predict(fit_model, ndraws = 200)
+yrep <- posterior_predict(fit_model, ndraws = 1000)
 
 sim_res <- createDHARMa(
   simulatedResponse = t(yrep),
-  observedResponse = df_resp$max_peak,
+  observedResponse = df_resp$max_cumsum,
   fittedPredictedResponse = fitted(fit_model)[, "Estimate"]
 )
+
+print(plot(sim_res))
+plotResiduals(sim_res, df_resp$stimulus)
+plotResiduals(sim_res, df_resp$stimulus0)
+plotResiduals(sim_res, df_resp$Genotype)
+plotResiduals(sim_res, df_resp$Block)
+plotResiduals(sim_res, df_resp$animal)
 
 save_plot_as_png(
   paste0("nlme_", var_name, "_DHARMa_residuals.png"),
   quote(plot(sim_res))
 )
 
+
 # Compute leave-one-out cross-validation:
 loo_var <- loo(fit_model)
+
 print(loo_var)
 save_plot_as_png(
   paste0("nlme_", var_name, "_loo_plot.png"),
@@ -259,646 +286,40 @@ save_plot_as_png(
 )
 # loo_compare(loo1, loo2)  # compare models
 
-# ==============================================================================
-# Save fitted model to HDD
-# ==============================================================================
-saveRDS(
-  fit_model,
-  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
-)
-
-# ==============================================================================
-# Load fitted model if available
-# ==============================================================================
-fit_model <- readRDS(
-  file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
-)
 
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-plot_response_var <- function(df_resp, fit_model, var,
-                              y_label = NULL,
-                              n_points = 100) {
-  
-  var_name <- rlang::as_name(rlang::ensym(var))
-  
-  if (is.null(y_label)) {
-    y_label <- var_name
-  }
-  
-  new_data <- df_resp %>%
-    group_by(Genotype, Block) %>%
-    summarise(
-      stim_min = min(stimulus, na.rm = TRUE),
-      stim_max = max(stimulus, na.rm = TRUE),
-      .groups = "drop"
-    ) %>%
-    group_by(Genotype, Block) %>%
-    reframe(
-      stimulus = seq(stim_min, stim_max, length.out = n_points)
-    ) %>%
-    mutate(
-      stimulus0 = stimulus - 1,
-      Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-      Block = factor(Block, levels = levels(df_resp$Block))
-    )
-  
-  pred <- fitted(
-    fit_model,
-    newdata = new_data,
-    re_formula = NA,
-    summary = TRUE
-  )
-  
-  pred_data <- bind_cols(new_data, as.data.frame(pred)) %>%
-    rename(
-      fit = Estimate,
-      CI_low = Q2.5,
-      CI_high = Q97.5
-    )
-  
-  raw_data <- df_resp %>%
-    group_by(Genotype, Block, stimulus) %>%
-    summarise(
-      mean_response = mean({{ var }}, na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  ggplot(pred_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
-    facet_grid(Block ~ Genotype, scales = "fixed") +
-    
-    geom_point(
-      data = raw_data,
-      aes(x = stimulus, y = mean_response),
-      alpha = 0.35,
-      size = 1,
-      inherit.aes = FALSE
-    ) +
-    
-    geom_ribbon(
-      aes(ymin = CI_low, ymax = CI_high),
-      alpha = 0.15,
-      color = NA
-    ) +
-    
-    geom_line(
-      aes(y = fit),
-      linewidth = 1.3
-    ) +
-    
-    theme_pubr(base_size = 14) +
-    labs(
-      x = "Stimulus number within block",
-      y = y_label,
-      color = "Genotype",
-      fill = "Genotype"
-    ) +
-    theme(
-      legend.position = "top",
-      panel.spacing = unit(1.2, "lines")
-    )
-}
+save_fig_dir <- NULL
 
-p_cumsum_exp <- plot_response_var(
-  df_resp = df_resp,
-  fit_model = fit_model,
-  var = max_cumsum,
-  y_label = "Cumulative distance moved"
+p_hab <- plot_habituation_response(
+  df_resp, fit_model,
+  response_var = "max_cumsum",
+  y_label = "Summed distance moved",
+  y_limits = c(0, 20),
+  raw_data = "trials"
+  #raw_data = "aggregate"
 )
 
-print(p_cumsum_exp)
+p_hab
 
-ggsave(
-  filename = file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_curves.png")
-  ),
-  plot = p_peak_exp,
-  width = 14,
-  height = 7,
-  dpi = 300
+p_hab_agg <- plot_habituation_response(
+  df_resp, fit_model,
+  response_var = "max_cumsum",
+  y_label = "Summed distance moved",
+  y_limits = c(0, 20),
+ raw_data = "aggregate"
 )
 
-# ==============================================================================
-# Compare habituation rate k between all Genotypes
-# ==============================================================================
-# ------------------------------------------------------------------------------
-# 1. Create grid of Genotype × Block combinations
-# ------------------------------------------------------------------------------
-k_grid <- expand.grid(
-  Genotype = levels(df_resp$Genotype),
-  Block = levels(df_resp$Block)
-) %>%
-  mutate(
-    stimulus0 = 0,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
+p_hab_agg
 
-# ------------------------------------------------------------------------------
-# 2. Extract posterior draws for lrc
-# ------------------------------------------------------------------------------
-lrc_draws <- posterior_linpred(
-  fit_model,
-  newdata = k_grid,
-  nlpar = "lrc",
-  re_formula = NA,
-  transform = FALSE
+
+p_hab_averaged <- plot_habituation_response_animal_averaged(
+  df_resp, fit_model,
+  response_var = "max_cumsum",
+  ndraws = 500,
+  y_label = "Summed distance moved",
+  y_limits = c(0, 20)
 )
 
-
-# ------------------------------------------------------------------------------
-# 3. Convert to k = exp(lrc)
-# ------------------------------------------------------------------------------
-
-k_draws_df <- bind_rows(
-  lapply(seq_len(nrow(k_grid)), function(i) {
-    
-    tibble(
-      draw = seq_len(nrow(lrc_draws)),
-      Genotype = k_grid$Genotype[i],
-      Block = k_grid$Block[i],
-      lrc = lrc_draws[, i],
-      k = exp(lrc_draws[, i])
-    )
-    
-  })
-)
-
-# ------------------------------------------------------------------------------
-# 4. Summary table
-# ------------------------------------------------------------------------------
-
-k_summary <- k_draws_df %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    k_median = median(k),
-    k_low = quantile(k, 0.025),
-    k_high = quantile(k, 0.975),
-    
-    half_life_median = median(log(2) / k),
-    
-    .groups = "drop"
-  )
-
-print(k_summary)
-
-# ------------------------------------------------------------------------------
-# 5. All pairwise genotype comparisons within each Block
-# ------------------------------------------------------------------------------
-
-comparison_df <- k_draws_df %>%
-  rename(
-    Genotype_1 = Genotype,
-    k_1 = k
-  ) %>%
-  inner_join(
-    k_draws_df %>%
-      rename(
-        Genotype_2 = Genotype,
-        k_2 = k
-      ),
-    by = c("draw", "Block"),
-    relationship = "many-to-many"
-  ) %>%
-  filter(as.character(Genotype_1) < as.character(Genotype_2)) %>%
-  mutate(
-    comparison = paste(Genotype_1, "vs", Genotype_2),
-    k_difference = k_1 - k_2,
-    k_ratio = k_1 / k_2
-  )
-
-# ------------------------------------------------------------------------------
-# 6. Summarise all comparisons
-# ------------------------------------------------------------------------------
-
-comparison_summary <- comparison_df %>%
-  group_by(Block, Genotype_1, Genotype_2, comparison) %>%
-  summarise(
-    median_difference = median(k_difference),
-    diff_low = quantile(k_difference, 0.025),
-    diff_high = quantile(k_difference, 0.975),
-    
-    median_ratio = median(k_ratio),
-    ratio_low = quantile(k_ratio, 0.025),
-    ratio_high = quantile(k_ratio, 0.975),
-    
-    prob_Genotype_1_faster = mean(k_1 > k_2),
-    prob_Genotype_2_faster = mean(k_1 < k_2),
-    
-    .groups = "drop"
-  )
-
-print(comparison_summary)
-
-write.csv(
-  comparison_summary,
-  file.path(
-    base_dir,
-    "results",
-    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_comparisons.csv")
-  ),
-  row.names = FALSE
-)
-
-
-# ------------------------------------------------------------------------------
-# 7. Plot posterior distributions of k
-# ------------------------------------------------------------------------------
-p_k <- ggplot(
-  k_draws_df,
-  aes(x = k, fill = Genotype)
-) +
-  
-  facet_wrap(~Block, scales = "free") +
-  
-  geom_density(
-    alpha = 0.35
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  
-  labs(
-    x = "Habituation rate k",
-    y = "Posterior density",
-    title = "Posterior distributions of habituation rate",
-    fill = "Genotype"
-  )
-
-print(p_k)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_rate_posteriors.png")
-  ),
-  p_k,
-  width = 10,
-  height = 5,
-  dpi = 300
-)
-
-# ------------------------------------------------------------------------------
-# 8. Plot all pairwise comparisons
-# ------------------------------------------------------------------------------
-
-p_compare <- comparison_summary %>%
-  ggplot(
-    aes(
-      x = comparison,
-      y = median_ratio,
-      ymin = ratio_low,
-      ymax = ratio_high,
-      color = Genotype_1
-    )
-  ) +
-  facet_wrap(~Block, scales = "free_x") +
-  geom_hline(
-    yintercept = 1,
-    linetype = "dashed"
-  ) +
-  geom_pointrange(
-    linewidth = 0.8
-  ) +
-  coord_flip() +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Comparison",
-    y = "Habituation rate ratio",
-    title = "All pairwise habituation rate comparisons",
-    color = "Numerator genotype"
-  )
-
-print(p_compare)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_habituation_rate_all_pairwise_ratios.png")
-  ),
-  p_compare,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-# ==============================================================================
-# Compare Asym between all Genotypes
-# ==============================================================================
-
-asym_grid <- expand.grid(
-  Genotype = levels(df_resp$Genotype),
-  Block = levels(df_resp$Block)
-) %>%
-  mutate(
-    stimulus0 = 0,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-asym_draws <- posterior_linpred(
-  fit_model,
-  newdata = asym_grid,
-  nlpar = "Asym",
-  re_formula = NA,
-  transform = FALSE
-)
-
-asym_draws_df <- bind_rows(
-  lapply(seq_len(nrow(asym_grid)), function(i) {
-    tibble(
-      draw = seq_len(nrow(asym_draws)),
-      Genotype = asym_grid$Genotype[i],
-      Block = asym_grid$Block[i],
-      Asym = asym_draws[, i]
-    )
-  })
-)
-
-asym_summary <- asym_draws_df %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    Asym_median = median(Asym),
-    Asym_low = quantile(Asym, 0.025),
-    Asym_high = quantile(Asym, 0.975),
-    .groups = "drop"
-  )
-
-print(asym_summary)
-
-asym_comparison_df <- asym_draws_df %>%
-  rename(
-    Genotype_1 = Genotype,
-    Asym_1 = Asym
-  ) %>%
-  inner_join(
-    asym_draws_df %>%
-      rename(
-        Genotype_2 = Genotype,
-        Asym_2 = Asym
-      ),
-    by = c("draw", "Block"),
-    relationship = "many-to-many"
-  ) %>%
-  filter(as.character(Genotype_1) < as.character(Genotype_2)) %>%
-  mutate(
-    comparison = paste(Genotype_1, "vs", Genotype_2),
-    Asym_difference = Asym_1 - Asym_2
-  )
-
-asym_comparison_summary <- asym_comparison_df %>%
-  group_by(Block, Genotype_1, Genotype_2, comparison) %>%
-  summarise(
-    median_difference = median(Asym_difference),
-    diff_low = quantile(Asym_difference, 0.025),
-    diff_high = quantile(Asym_difference, 0.975),
-    prob_Genotype_1_higher = mean(Asym_1 > Asym_2),
-    prob_Genotype_2_higher = mean(Asym_1 < Asym_2),
-    .groups = "drop"
-  )
-
-print(asym_comparison_summary)
-
-write.csv(
-  asym_comparison_summary,
-  file.path(
-    base_dir,
-    "results",
-    paste0("nlme_", var_name, "_Asym_all_pairwise_comparisons.csv")
-  ),
-  row.names = FALSE
-)
-# ------------------------------------------------------------------------------
-# Plot Asym posterior distributions
-# ------------------------------------------------------------------------------
-
-p_asym <- ggplot(
-  asym_draws_df,
-  aes(x = Asym, fill = Genotype)
-) +
-  facet_wrap(~Block, scales = "free") +
-  geom_density(alpha = 0.35) +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Asym",
-    y = "Posterior density",
-    title = "Posterior distributions of Asym",
-    fill = "Genotype"
-  )
-
-print(p_asym)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_Asym_posteriors.png")
-  ),
-  p_asym,
-  width = 10,
-  height = 5,
-  dpi = 300
-)
-
-# ------------------------------------------------------------------------------
-# Plot all pairwise Asym comparisons
-# ------------------------------------------------------------------------------
-
-p_asym_compare <- asym_comparison_summary %>%
-  ggplot(
-    aes(
-      x = comparison,
-      y = median_difference,
-      ymin = diff_low,
-      ymax = diff_high,
-      color = Genotype_1
-    )
-  ) +
-  facet_wrap(~Block, scales = "free_x") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_pointrange(linewidth = 0.8) +
-  coord_flip() +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Comparison",
-    y = "Asym difference",
-    title = "All pairwise Asym comparisons",
-    color = "Genotype 1"
-  )
-
-print(p_asym_compare)
-
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_Asym_all_pairwise_differences.png")
-  ),
-  p_asym_compare,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
-
-# ==============================================================================
-# Compare R0 between all Genotypes
-# ==============================================================================
-
-r0_grid <- expand.grid(
-  Genotype = levels(df_resp$Genotype),
-  Block = levels(df_resp$Block)
-) %>%
-  mutate(
-    stimulus0 = 0,
-    Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-    Block = factor(Block, levels = levels(df_resp$Block))
-  )
-
-r0_draws <- posterior_linpred(
-  fit_model,
-  newdata = r0_grid,
-  nlpar = "R0",
-  re_formula = NA,
-  transform = FALSE
-)
-
-r0_draws_df <- bind_rows(
-  lapply(seq_len(nrow(r0_grid)), function(i) {
-    tibble(
-      draw = seq_len(nrow(r0_draws)),
-      Genotype = r0_grid$Genotype[i],
-      Block = r0_grid$Block[i],
-      R0 = r0_draws[, i]
-    )
-  })
-)
-
-r0_summary <- r0_draws_df %>%
-  group_by(Genotype, Block) %>%
-  summarise(
-    R0_median = median(R0),
-    R0_low = quantile(R0, 0.025),
-    R0_high = quantile(R0, 0.975),
-    .groups = "drop"
-  )
-
-print(r0_summary)
-
-r0_comparison_df <- r0_draws_df %>%
-  rename(
-    Genotype_1 = Genotype,
-    R0_1 = R0
-  ) %>%
-  inner_join(
-    r0_draws_df %>%
-      rename(
-        Genotype_2 = Genotype,
-        R0_2 = R0
-      ),
-    by = c("draw", "Block"),
-    relationship = "many-to-many"
-  ) %>%
-  filter(as.character(Genotype_1) < as.character(Genotype_2)) %>%
-  mutate(
-    comparison = paste(Genotype_1, "vs", Genotype_2),
-    R0_difference = R0_1 - R0_2
-  )
-
-r0_comparison_summary <- r0_comparison_df %>%
-  group_by(Block, Genotype_1, Genotype_2, comparison) %>%
-  summarise(
-    median_difference = median(R0_difference),
-    diff_low = quantile(R0_difference, 0.025),
-    diff_high = quantile(R0_difference, 0.975),
-    prob_Genotype_1_higher = mean(R0_1 > R0_2),
-    prob_Genotype_2_higher = mean(R0_1 < R0_2),
-    .groups = "drop"
-  )
-
-print(r0_comparison_summary)
-
-write.csv(
-  r0_comparison_summary,
-  file.path(
-    base_dir,
-    "results",
-    paste0("nlme_", var_name, "_R0_all_pairwise_comparisons.csv")
-  ),
-  row.names = FALSE
-)
-
-# ------------------------------------------------------------------------------
-# Plot R0 posterior distributions
-# ------------------------------------------------------------------------------
-
-p_r0 <- ggplot(
-  r0_draws_df,
-  aes(x = R0, fill = Genotype)
-) +
-  facet_wrap(~Block, scales = "free") +
-  geom_density(alpha = 0.35) +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "R0",
-    y = "Posterior density",
-    title = "Posterior distributions of R0",
-    fill = "Genotype"
-  )
-
-print(p_r0)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_R0_posteriors.png")
-  ),
-  p_r0,
-  width = 10,
-  height = 5,
-  dpi = 300
-)
-# ------------------------------------------------------------------------------
-# Plot all pairwise R0 comparisons
-# ------------------------------------------------------------------------------
-
-p_r0_compare <- r0_comparison_summary %>%
-  ggplot(
-    aes(
-      x = comparison,
-      y = median_difference,
-      ymin = diff_low,
-      ymax = diff_high,
-      color = Genotype_1
-    )
-  ) +
-  facet_wrap(~Block, scales = "free_x") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  geom_pointrange(linewidth = 0.8) +
-  coord_flip() +
-  theme_pubr(base_size = 14) +
-  labs(
-    x = "Comparison",
-    y = "R0 difference",
-    title = "All pairwise R0 comparisons",
-    color = "Genotype 1"
-  )
-
-print(p_r0_compare)
-
-ggsave(
-  file.path(
-    base_dir,
-    "figs",
-    paste0("nlme_", var_name, "_R0_all_pairwise_differences.png")
-  ),
-  p_r0_compare,
-  width = 10,
-  height = 8,
-  dpi = 300
-)
+p_hab_averaged

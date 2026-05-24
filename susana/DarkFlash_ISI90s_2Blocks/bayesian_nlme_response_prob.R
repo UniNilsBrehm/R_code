@@ -29,18 +29,18 @@ save_plot <- function(p, filename, width = 7, height = 5) {
 }
 # ==============================================================================
 
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
 # source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
 # source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
 
-source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
-source("D:/Behavior_Data/R_code/susana/plot_utils.R")
+# source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
+# source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
@@ -214,7 +214,8 @@ fit_model <- brm(
   seed = 42,
   control = list(adapt_delta = 0.99, max_treedepth = 15),
   init    = 0,                        # important for nonlinear models
-  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds"))
+  file = file.path(base_dir, "models", paste0("bayesian_nlme_", var_name,"_results.rds")),
+  file_refit = "on_change"
 )
 
 
@@ -335,20 +336,21 @@ p_hab <- plot_habituation_probability(
   fit_model = fit_model,
   save_fig_dir = save_fig_dir,
   var_name = var_name,
-  # raw_data = "binary"
-  raw_data = "aggregate"
+  raw_data = "binary"
 )
 
 p_hab
 
-p_latent <- plot_habituation_latent(
+p_hab_agg <- plot_habituation_probability(
   df_resp = df_resp,
   fit_model = fit_model,
   save_fig_dir = save_fig_dir,
-  var_name = var_name
+  var_name = var_name,
+  # raw_data = "binary"
+  raw_data = "aggregate"
 )
 
-p_latent
+p_hab_agg
 
 # Only for diagnostics
 p_animal_avg <- plot_habituation_probability_animal_averaged(
