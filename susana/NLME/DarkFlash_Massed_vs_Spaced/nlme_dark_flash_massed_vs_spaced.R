@@ -45,10 +45,11 @@ library(patchwork)
 # ==============================================================================
 # Paths
 # ==============================================================================
-source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_Massed_vs_Spaced//utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_Massed_vs_Spaced//utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_Massed_vs_Spaced//utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_Joint_SpacedVsMassed/"
-base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_Joint_SpacedVsMassed/"
+# base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_Joint_SpacedVsMassed/"
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/NLME/DarkFlash_Joint_SpacedVsMassed/"
 
 file_massed <- file.path(
   base_dir,
@@ -147,6 +148,8 @@ df_all <- bind_rows(df_massed_tagged, df_spaced_tagged) %>%
 # 
 # summary_compare
 # df_all <- df_filtered
+
+write.csv(df_all, file.path(base_dir, 'data_files', 'final_data.csv'), row.names = FALSE)
 
 # Sanity checks ----------------------------------------------------------------
 cat("\n--- Rows per Training x Block ---\n")
