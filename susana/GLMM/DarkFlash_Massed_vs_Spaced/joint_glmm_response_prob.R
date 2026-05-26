@@ -33,13 +33,18 @@ library(ggpubr)
 library(stringr)
 
 # Load helper functions
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/GLMM/DarkFlash_Massed_vs_Spaced/utils.R")
-from_file <- TRUE  # load pre-fitted model from file
+source_base_dir <- "C:/UniFreiburg/Code"
+# source_base_dir <- "C:/Users/NilsPC/Desktop/Susana"
+source(file.path(source_base_dir,"/R_code/susana/GLMM/DarkFlash_Massed_vs_Spaced/utils.R"))
+
+from_file <- FALSE  # load pre-fitted model from file
 
 # ==============================================================================
 # 1. Paths
 # ==============================================================================
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/GLMM/DarkFlash_Massed_vs_Spaced"
+root_dir <- "D:/WorkingData"
+# root_dir <- "C:/Users/NilsPC/Desktop/Susana"
+base_dir <- file.path(root_dir, "/Susana/GLMM/DarkFlash_Massed_vs_Spaced")
 
 file_massed <- file.path(
   base_dir,
@@ -64,8 +69,8 @@ dir.create(save_fig_dir,     recursive = TRUE, showWarnings = FALSE)
 # 2. Load and prepare both datasets
 # ==============================================================================
 # All 5 genotypes -> NO keep filter
-res_massed <- load_data(file_massed, move_th = 1, drop = c('th2, tyr', 'tyr'))
-res_spaced <- load_data(file_spaced, move_th = 1, drop = c('th2, tyr', 'tyr'))
+res_massed <- load_data(file_massed, move_th = 0, drop = c('th2, tyr', 'tyr'))
+res_spaced <- load_data(file_spaced, move_th = 0, drop = c('th2, tyr', 'tyr'))
 
 df_massed <- res_massed$df_final
 df_spaced <- res_spaced$df_final
@@ -101,6 +106,26 @@ df_all <- bind_rows(df_massed_tagged, df_spaced_tagged) %>%
     Well      = factor(Well),
     animal    = factor(paste0(Training, "_", Video, ".", Well))
   )
+
+# Remove all non-responders to stimulus 1 in Block 1
+df_filtered <- df_all %>%
+  group_by(animal) %>%
+  filter(!any(Block == 1 & stimulus == 1 & move == 0)) %>%
+  ungroup()
+
+summary_compare <- bind_rows(
+  df_all %>%
+    distinct(animal, Genotype, Training) %>%
+    mutate(dataset = "before"),
+  
+  df_filtered %>%
+    distinct(animal, Genotype, Training) %>%
+    mutate(dataset = "after")
+) %>%
+  count(dataset, Genotype, Training)
+
+summary_compare
+df_all <- df_filtered
 
 
 # Sanity checks ----------------------------------------------------------------
