@@ -1,21 +1,29 @@
 ###############################################################################
-# Joint GLMM Analysis: Spaced vs Massed Training - Response Probability
+# Joint GLMM Analysis: Spaced vs Massed Training - summed Distance Moved
 # Author: Nils Brehm
-# Date: 11/2025
+# Date: 2026
 #
 # Description:
 #   Joint GLMM combining the spaced and massed training datasets into one
-#   model to test the spaced-vs-massed memory contrast directly.
+#   model to test the spaced-vs-massed memory contrast directly for:
+#
+#     max_cumsum = Summed distance moved
 #
 #   Model:
-#     move ~ Genotype * Training * Block * stimulus_log + (1 | animal)
+#     max_cumsum ~ Genotype * Training * Block * stimulus_log + (1 | animal)
 #
-#   Memory contrasts (per genotype):
-#     (A) P(move) at first test stimulus,    spaced vs massed
-#     (B) Mean P(move) over first 3 test stimuli, spaced vs massed
+#   Model family:
+#     Gamma(link = "log")
 #
-#   Negative spaced-massed difference => spaced fish respond less in the test
-#   block => better memory retention.
+#   Memory contrasts per genotype:
+#     (A) max_cumsum at first test stimulus, spaced vs massed
+#     (B) mean max_cumsum over first 3 test stimuli, spaced vs massed
+#     (C) mean max_cumsum over all shared test stimuli, spaced vs massed
+#     (D) inter-block recovery in max_cumsum, spaced vs massed
+#
+#   Negative spaced-massed difference => spaced fish move less in the test block
+#   => better memory retention, assuming smaller Summed movement reflects stronger
+#   retained habituation.
 ###############################################################################
 
 # ==============================================================================
@@ -50,11 +58,11 @@ file_massed <- file.path(
 file_spaced <- file.path(
   base_dir,
   "data_files",
-  "SPZ_Spaced_Training_Nov2025.csv"     
+  "SPZ_Spaced_Training_Nov2025.csv"
 )
 
-save_results_dir <- file.path(base_dir, "results", "glmm_joint_response_prob")
-save_fig_dir     <- file.path(base_dir, "figs",    "glmm_joint_response_prob")
+save_results_dir <- file.path(base_dir, "results", "glmm_joint_summed_distance")
+save_fig_dir     <- file.path(base_dir, "figs",    "glmm_joint_summed_distance")
 
 dir.create(save_results_dir, recursive = TRUE, showWarnings = FALSE)
 dir.create(save_fig_dir,     recursive = TRUE, showWarnings = FALSE)
@@ -63,12 +71,28 @@ dir.create(save_fig_dir,     recursive = TRUE, showWarnings = FALSE)
 # ==============================================================================
 # 2. Load and prepare both datasets
 # ==============================================================================
-# All 5 genotypes -> NO keep filter
-res_massed <- load_data(file_massed, move_th = 1, drop = c('th2, tyr', 'tyr'))
-res_spaced <- load_data(file_spaced, move_th = 1, drop = c('th2, tyr', 'tyr'))
+# For Gamma models, use the positive-response subset from load_data().
+# This matches the old massed max_cumsum analysis, which used df_final_sub.
+res_massed <- load_data(file_massed, move_th = 1, drop = c("th2, tyr", "tyr"))
+res_spaced <- load_data(file_spaced, move_th = 1, drop = c("th2, tyr", "tyr"))
 
-df_massed <- res_massed$df_final
-df_spaced <- res_spaced$df_final
+df_massed <- res_massed$df_final_sub
+df_spaced <- res_spaced$df_final_sub
+
+# Fallback in case your current utils.R does not return df_final_sub.
+# Gamma models require strictly positive responses.
+if (is.null(df_massed)) {
+  df_massed <- res_massed$df_final %>%
+    filter(!is.na(max_cumsum), max_cumsum > 0)
+}
+if (is.null(df_spaced)) {
+  df_spaced <- res_spaced$df_final %>%
+    filter(!is.na(max_cumsum), max_cumsum > 0)
+}
+
+# Safety filter for Gamma model
+df_massed <- df_massed %>% filter(!is.na(max_cumsum), max_cumsum > 0)
+df_spaced <- df_spaced %>% filter(!is.na(max_cumsum), max_cumsum > 0)
 
 
 # Tag each row with Training, and define BlockRole.
@@ -89,7 +113,7 @@ df_spaced_tagged <- df_spaced %>%
   )
 
 
-# CRITICAL: make animal IDs unique across experiments
+# CRITICAL: make animal IDs unique across experiments.
 # Same Video x Well combo from different experiments must not collide.
 df_all <- bind_rows(df_massed_tagged, df_spaced_tagged) %>%
   mutate(
@@ -121,53 +145,85 @@ print(
     summarise(min_stim = min(stimulus), max_stim = max(stimulus), .groups = "drop")
 )
 
+cat("\n--- max_cumsum summary by Training x Block ---\n")
+print(
+  df_all %>%
+    group_by(Training, Block, BlockRole) %>%
+    summarise(
+      n = n(),
+      mean_max_cumsum = mean(max_cumsum, na.rm = TRUE),
+      median_max_cumsum = median(max_cumsum, na.rm = TRUE),
+      min_max_cumsum = min(max_cumsum, na.rm = TRUE),
+      max_max_cumsum = max(max_cumsum, na.rm = TRUE),
+      .groups = "drop"
+    )
+)
+
 
 # ==============================================================================
-# 3. Fit the joint GLMM
+# 3. Exploratory distribution plot
 # ==============================================================================
-message("Fitting joint GLMM (spaced + massed)...")
+message("Plotting max_cumsum distributions...")
+p_dist <- ggplot(df_all, aes(x = max_cumsum)) +
+  geom_histogram(binwidth = 1, fill = "skyblue", color = "black") +
+  facet_grid(Training ~ Genotype, scales = "free_y") +
+  theme_pubr(base_size = 12) +
+  labs(
+    title = "Summed distance distribution: joint spaced + massed dataset",
+    x = "Summed distance moved, max_cumsum",
+    y = "Count"
+  )
 
-# We use the same model structure as your single-experiment GLMMs but add
-# Training as an additional factor in the full interaction.
-# (1 | animal) replaces (1 | Video/Well) because animal IDs are now globally
-# unique across the two experiments.
-if (from_file) {
+ggsave(
+  file.path(save_fig_dir, "joint_max_cumsum_distribution.png"),
+  p_dist, width = 12, height = 6, dpi = 300, bg = "white"
+)
+
+
+# ==============================================================================
+# 4. Fit the joint GLMM
+# ==============================================================================
+message("Fitting joint Gamma GLMM for max_cumsum...")
+
+# Same joint structure as the response-probability model,
+# but with Gamma(log) because max_cumsum is positive continuous.
+if (from_file){
   # Load fitted model if available
-  m_joint  <- readRDS(
-    file.path(save_results_dir, "joint_glmm_spaced_vs_massed.rds")
+  m_joint_summed  <- readRDS(
+    file.path(save_results_dir, "joint_glmm_spaced_vs_massed_max_cumsum.rds")
   )
   
-} else {
-  # Fit the model
-  m_joint <- glmmTMB(
-    move ~ Genotype * Training * Block * stimulus_log + (1 | animal),
-    family = binomial(link = "logit"),
+} else{
+  m_joint_summed <- glmmTMB(
+    max_cumsum ~ Genotype * Training * Block * stimulus_log + (1 | animal),
+    family = Gamma(link = "log"),
     data   = df_all
   )
   
-  # Save fitted model
   saveRDS(
-    m_joint,
-    file.path(save_results_dir, "joint_glmm_spaced_vs_massed.rds")
+    m_joint_summed,
+    file.path(save_results_dir, "joint_glmm_spaced_vs_massed_max_cumsum.rds")
   )
 }
 
 capture.output(
-  summary(m_joint),
-  file = file.path(save_results_dir, "summary_results.txt")
+  summary(m_joint_summed),
+  file = file.path(save_results_dir, "summary_results_max_cumsum.txt")
 )
 
+print(summary(m_joint_summed))
+
 # ==============================================================================
-# 4. Validate model
+# 5. Validate model
 # ==============================================================================
-message("Validating joint model residuals...")
-validate_model(m_joint, df_all)
+message("Validating joint max_cumsum model residuals...")
+validate_model(m_joint_summed, df_all)
 
 
 # ==============================================================================
-# 5. Plot habituation curves (joint model)
+# 6. Plot habituation curves: predicted max_cumsum across stimuli
 # ==============================================================================
-message("Plotting joint habituation curves...")
+message("Plotting joint max_cumsum habituation curves...")
 
 # Build prediction grid: per (Training, Block, Genotype) at each observed stimulus
 new_data_joint <- df_all %>%
@@ -191,25 +247,29 @@ new_data_joint <- df_all %>%
   )
 
 pred_joint <- predict(
-  m_joint,
+  m_joint_summed,
   newdata = new_data_joint,
   re.form = NA,
-  se.fit  = TRUE
+  se.fit  = TRUE,
+  type    = "link"
 )
 
 new_data_joint <- new_data_joint %>%
   mutate(
-    fit     = plogis(pred_joint$fit),
-    CI_low  = plogis(pred_joint$fit - 1.96 * pred_joint$se.fit),
-    CI_high = plogis(pred_joint$fit + 1.96 * pred_joint$se.fit)
+    fit     = exp(pred_joint$fit),
+    CI_low  = exp(pred_joint$fit - 1.96 * pred_joint$se.fit),
+    CI_high = exp(pred_joint$fit + 1.96 * pred_joint$se.fit)
   )
 
 raw_summary_joint <- df_all %>%
   group_by(Training, Block, Genotype, stimulus) %>%
-  summarise(p_move = mean(move, na.rm = TRUE), .groups = "drop")
+  summarise(
+    mean_max_cumsum = mean(max_cumsum, na.rm = TRUE),
+    .groups = "drop"
+  )
 
 
-# Plot massed and spaced separately so the panels are readable
+# Plot massed and spaced separately so panels remain readable
 p_massed_curves <- ggplot(
   new_data_joint %>% filter(Training == "massed"),
   aes(x = stimulus, color = Genotype, fill = Genotype)
@@ -217,18 +277,16 @@ p_massed_curves <- ggplot(
   facet_grid(Genotype ~ Block, scales = "free_x") +
   geom_point(
     data = raw_summary_joint %>% filter(Training == "massed"),
-    aes(x = stimulus, y = p_move, color = Genotype),
+    aes(x = stimulus, y = mean_max_cumsum, color = Genotype),
     inherit.aes = FALSE, alpha = 0.25, size = 0.6
   ) +
   geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.15, color = NA) +
   geom_line(aes(y = fit), linewidth = 1.1) +
-  coord_cartesian(ylim = c(0, 1)) +
-  scale_y_continuous(breaks = c(0, 0.5, 1)) +
   theme_pubr(base_size = 12) +
   labs(
     x = "Stimulus number within block",
-    y = "Response probability",
-    title = "Joint GLMM: Massed training"
+    y = "summed distance moved, max_cumsum",
+    title = "Joint Gamma GLMM: Massed training"
   ) +
   theme(legend.position = "none")
 
@@ -239,18 +297,16 @@ p_spaced_curves <- ggplot(
   facet_grid(Genotype ~ Block, scales = "free_x") +
   geom_point(
     data = raw_summary_joint %>% filter(Training == "spaced"),
-    aes(x = stimulus, y = p_move, color = Genotype),
+    aes(x = stimulus, y = mean_max_cumsum, color = Genotype),
     inherit.aes = FALSE, alpha = 0.25, size = 0.6
   ) +
   geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.15, color = NA) +
   geom_line(aes(y = fit), linewidth = 1.1) +
-  coord_cartesian(ylim = c(0, 1)) +
-  scale_y_continuous(breaks = c(0, 0.5, 1)) +
   theme_pubr(base_size = 12) +
   labs(
     x = "Stimulus number within block",
-    y = "Response probability",
-    title = "Joint GLMM: Spaced training"
+    y = "summed distance moved, max_cumsum",
+    title = "Joint Gamma GLMM: Spaced training"
   ) +
   theme(legend.position = "top")
 
@@ -258,16 +314,16 @@ print(p_spaced_curves)
 print(p_massed_curves)
 
 ggsave(
-  file.path(save_fig_dir, "joint_glmm_curves_massed.png"),
+  file.path(save_fig_dir, "joint_glmm_max_cumsum_curves_massed.png"),
   p_massed_curves, width = 10, height = 12, dpi = 300, bg = "white"
 )
 ggsave(
-  file.path(save_fig_dir, "joint_glmm_curves_spaced.png"),
+  file.path(save_fig_dir, "joint_glmm_max_cumsum_curves_spaced.png"),
   p_spaced_curves, width = 14, height = 12, dpi = 300, bg = "white"
 )
 
-# ------------------------------------------------------------------------------
-# Test-block curves only: massed vs spaced side by side
+# Test Block Panels only
+# Test-block curves only: massed vs spaced side by side for max_peak
 test_curve_data <- new_data_joint %>%
   filter(
     (Training == "massed" & as.character(Block) == massed_test_block) |
@@ -295,28 +351,35 @@ p_test_massed_spaced_side_by_side <- ggplot(
   facet_grid(Genotype ~ TestBlock, scales = "free_x") +
   geom_point(
     data = test_raw_data,
-    aes(x = stimulus, y = p_move, color = Genotype),
+    aes(x = stimulus, y = mean_max_cumsum, color = Genotype),
     inherit.aes = FALSE,
     alpha = 0.25,
     size = 0.7
   ) +
-  geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.15, color = NA) +
+  geom_ribbon(
+    aes(ymin = CI_low, ymax = CI_high),
+    alpha = 0.15,
+    color = NA
+  ) +
   geom_line(aes(y = fit), linewidth = 1.1) +
-  coord_cartesian(ylim = c(0, 1)) +
-  scale_y_continuous(breaks = c(0, 0.5, 1)) +
-  theme_pubr(base_size = 13) +
+  scale_color_manual(values = genotype_colors, drop = FALSE) +
+  scale_fill_manual(values = genotype_colors, drop = FALSE) +
+  theme_pub(base_size = 13) +
   labs(
     x = "Stimulus number within test block",
-    y = "Response probability",
-    title = "Joint GLMM: test-block habituation curves",
+    y = "Summed distance moved, max_peak",
+    title = "Joint Gamma GLMM: test-block max_peak curves",
     subtitle = "Massed and spaced test blocks shown side by side"
   ) +
-  theme(legend.position = "none")
+  theme(
+    legend.position = "none",
+    panel.grid.major.x = element_blank()
+  )
 
 print(p_test_massed_spaced_side_by_side)
 
 ggsave(
-  file.path(save_fig_dir, "joint_glmm_test_block_massed_vs_spaced_side_by_side.png"),
+  file.path(save_fig_dir, "joint_glmm_test_block_massed_vs_spaced_side_by_side_summed_distance.png"),
   p_test_massed_spaced_side_by_side,
   width = 9,
   height = 12,
@@ -325,27 +388,53 @@ ggsave(
 )
 
 # ==============================================================================
-# 6. Memory contrasts with proper joint-covariance SEs on response-probability scale
+# 7. Helper functions for max_cumsum contrasts with proper joint-covariance SEs
 # ==============================================================================
 #
-# Important:
-#   emmeans(..., type = "response") gives probabilities, but contrasts may still
-#   be handled on the link scale unless we regrid.
+# For Gamma(log), emmeans(..., type = "response") gives response-scale summaries,
+# but contrasts may still be handled on the link scale unless we regrid.
 #
-#   Therefore we use:
-#     emm_resp <- regrid(emm, transform = "response")
+# Therefore:
+#   emm_resp <- regrid(emm, transform = "response")
 #
-#   This makes probability the working linear scale, so contrast() estimates
-#   differences in P(move), with SEs based on the full fixed-effect covariance.
+# This makes max_cumsum the working linear scale, so contrast() estimates
+# differences in predicted max_cumsum, with SEs based on the full covariance matrix.
 # ==============================================================================
 
 genotypes <- levels(df_all$Genotype)
 
-# ------------------------------------------------------------------------------
-# Helper: extract test-block emmeans cells at one or more stimulus_log values
-# ------------------------------------------------------------------------------
+get_response_est_col <- function(df) {
+  candidate_cols <- c("response", "rate", "prob", "emmean", "estimate")
+  found <- candidate_cols[candidate_cols %in% names(df)]
+  if (length(found) == 0) {
+    stop("Could not find response estimate column. Columns are: ",
+         paste(names(df), collapse = ", "))
+  }
+  found[1]
+}
 
-get_test_emm_cells_response <- function(model, stim_log_values) {
+get_lcl_col <- function(df) {
+  candidate_cols <- c("asymp.LCL", "lower.CL", "LCL")
+  found <- candidate_cols[candidate_cols %in% names(df)]
+  if (length(found) == 0) {
+    stop("Could not find lower CI column. Columns are: ",
+         paste(names(df), collapse = ", "))
+  }
+  found[1]
+}
+
+get_ucl_col <- function(df) {
+  candidate_cols <- c("asymp.UCL", "upper.CL", "UCL")
+  found <- candidate_cols[candidate_cols %in% names(df)]
+  if (length(found) == 0) {
+    stop("Could not find upper CI column. Columns are: ",
+         paste(names(df), collapse = ", "))
+  }
+  found[1]
+}
+
+
+get_test_emm_cells_summed <- function(model, stim_log_values) {
   
   emm <- emmeans(
     model,
@@ -367,20 +456,12 @@ get_test_emm_cells_response <- function(model, stim_log_values) {
 }
 
 
-emm_response_to_per_cell <- function(emm_obj) {
+emm_summed_to_per_cell <- function(emm_obj) {
   emm_df <- as.data.frame(confint(emm_obj))
   
-  estimate_col <- c("prob", "response", "emmean", "estimate")[
-    c("prob", "response", "emmean", "estimate") %in% names(emm_df)
-  ][1]
-  
-  lower_col <- c("asymp.LCL", "lower.CL", "LCL")[
-    c("asymp.LCL", "lower.CL", "LCL") %in% names(emm_df)
-  ][1]
-  
-  upper_col <- c("asymp.UCL", "upper.CL", "UCL")[
-    c("asymp.UCL", "upper.CL", "UCL") %in% names(emm_df)
-  ][1]
+  est_col <- get_response_est_col(emm_df)
+  lcl_col <- get_lcl_col(emm_df)
+  ucl_col <- get_ucl_col(emm_df)
   
   emm_df %>%
     transmute(
@@ -389,21 +470,17 @@ emm_response_to_per_cell <- function(emm_obj) {
       Block,
       stimulus_log,
       stimulus = exp(stimulus_log),
-      prob     = .data[[estimate_col]],
+      max_cumsum = .data[[est_col]],
       SE       = SE,
-      lower    = pmax(0, .data[[lower_col]]),
-      upper    = pmin(1, .data[[upper_col]])
+      lower    = pmax(0, .data[[lcl_col]]),
+      upper    = .data[[ucl_col]]
     )
 }
 
 
-# ------------------------------------------------------------------------------
-# Core helper: proper spaced - massed contrast, averaged across selected stimuli
-# ------------------------------------------------------------------------------
-
-proper_spaced_vs_massed_prob_contrast <- function(model, stim_log_values, label) {
+proper_spaced_vs_massed_summed_contrast <- function(model, stim_log_values, label) {
   
-  emm_sub <- get_test_emm_cells_response(model, stim_log_values)
+  emm_sub <- get_test_emm_cells_summed(model, stim_log_values)
   emm_df  <- as.data.frame(emm_sub)
   
   genotypes_local <- levels(droplevels(emm_df$Genotype))
@@ -435,25 +512,11 @@ proper_spaced_vs_massed_prob_contrast <- function(model, stim_log_values, label)
   con_ci <- as.data.frame(confint(con))
   con_p  <- as.data.frame(con)
   
-  est_col <- c("estimate", "Estimate")[
-    c("estimate", "Estimate") %in% names(con_ci)
-  ][1]
-  
-  lo_col <- c("asymp.LCL", "lower.CL", "LCL")[
-    c("asymp.LCL", "lower.CL", "LCL") %in% names(con_ci)
-  ][1]
-  
-  hi_col <- c("asymp.UCL", "upper.CL", "UCL")[
-    c("asymp.UCL", "upper.CL", "UCL") %in% names(con_ci)
-  ][1]
-  
-  z_col <- c("z.ratio", "t.ratio")[
-    c("z.ratio", "t.ratio") %in% names(con_p)
-  ][1]
-  
-  p_col <- c("p.value", "pvalue")[
-    c("p.value", "pvalue") %in% names(con_p)
-  ][1]
+  est_col <- c("estimate", "Estimate")[c("estimate", "Estimate") %in% names(con_ci)][1]
+  lo_col  <- c("asymp.LCL", "lower.CL", "LCL")[c("asymp.LCL", "lower.CL", "LCL") %in% names(con_ci)][1]
+  hi_col  <- c("asymp.UCL", "upper.CL", "UCL")[c("asymp.UCL", "upper.CL", "UCL") %in% names(con_ci)][1]
+  z_col   <- c("z.ratio", "t.ratio")[c("z.ratio", "t.ratio") %in% names(con_p)][1]
+  p_col   <- c("p.value", "pvalue")[c("p.value", "pvalue") %in% names(con_p)][1]
   
   out <- tibble(
     Genotype  = factor(con_ci$contrast, levels = genotypes_local),
@@ -468,31 +531,50 @@ proper_spaced_vs_massed_prob_contrast <- function(model, stim_log_values, label)
   
   list(
     contrast = out,
-    per_cell = emm_response_to_per_cell(emm_sub)
+    per_cell = emm_summed_to_per_cell(emm_sub)
   )
 }
 
 
-aggregate_per_cell_prob_for_plot <- function(per_cell_df) {
+aggregate_per_cell_summed_for_plot <- function(per_cell_df) {
   per_cell_df %>%
     group_by(Genotype, Training, Block) %>%
     summarise(
-      prob           = mean(prob),
+      max_cumsum       = mean(max_cumsum),
       SE_descriptive = sqrt(sum(SE^2)) / n(),
-      lower          = pmax(0, prob - 1.96 * SE_descriptive),
-      upper          = pmin(1, prob + 1.96 * SE_descriptive),
+      lower          = pmax(0, max_cumsum - 1.96 * SE_descriptive),
+      upper          = max_cumsum + 1.96 * SE_descriptive,
       .groups        = "drop"
     )
 }
 
 
-# ------------------------------------------------------------------------------
-# A, B, C memory contrasts
-# ------------------------------------------------------------------------------
+finite_diff_gradient <- function(f, x, eps = 1e-6) {
+  grad <- numeric(length(x))
+  
+  for (i in seq_along(x)) {
+    x_hi <- x
+    x_lo <- x
+    
+    step <- eps * max(1, abs(x[i]))
+    
+    x_hi[i] <- x_hi[i] + step
+    x_lo[i] <- x_lo[i] - step
+    
+    grad[i] <- (f(x_hi) - f(x_lo)) / (2 * step)
+  }
+  
+  grad
+}
+
+
+# ==============================================================================
+# 8. Memory contrasts A, B, C with proper joint-covariance SEs
+# ==============================================================================
 
 # A: first test stimulus
-res_A <- proper_spaced_vs_massed_prob_contrast(
-  m_joint,
+res_A <- proper_spaced_vs_massed_summed_contrast(
+  m_joint_summed,
   stim_log_values = 0,
   label = "A_stim1"
 )
@@ -502,41 +584,78 @@ per_cell_A <- res_A$per_cell
 
 
 # B: mean over test stimuli 1:3
-res_B <- proper_spaced_vs_massed_prob_contrast(
-  m_joint,
+res_B <- proper_spaced_vs_massed_summed_contrast(
+  m_joint_summed,
   stim_log_values = log(1:3),
   label = "B_mean_stim1_to_3"
 )
 
 contrast_B     <- res_B$contrast
 per_cell_B_raw <- res_B$per_cell
-per_cell_B     <- aggregate_per_cell_prob_for_plot(per_cell_B_raw)
+per_cell_B     <- aggregate_per_cell_summed_for_plot(per_cell_B_raw)
 
 
 # C: mean over all shared test stimuli 1:8
 test_stims_for_C <- 1:8
 
-res_C <- proper_spaced_vs_massed_prob_contrast(
-  m_joint,
+res_C <- proper_spaced_vs_massed_summed_contrast(
+  m_joint_summed,
   stim_log_values = log(test_stims_for_C),
   label = "C_mean_all_test_stim"
 )
 
 contrast_C     <- res_C$contrast
 per_cell_C_raw <- res_C$per_cell
-per_cell_C     <- aggregate_per_cell_prob_for_plot(per_cell_C_raw)
+per_cell_C     <- aggregate_per_cell_summed_for_plot(per_cell_C_raw)
 
 
-# Save outputs
-write.csv(per_cell_A, file.path(save_results_dir, "per_cell_test_response_stim1.csv"), row.names = FALSE)
-write.csv(per_cell_B_raw, file.path(save_results_dir, "per_cell_test_response_stim1to3.csv"), row.names = FALSE)
-write.csv(per_cell_B, file.path(save_results_dir, "per_cell_test_response_stim1to3_aggregated.csv"), row.names = FALSE)
-write.csv(per_cell_C_raw, file.path(save_results_dir, "per_cell_test_response_meanAllStim_raw.csv"), row.names = FALSE)
-write.csv(per_cell_C, file.path(save_results_dir, "per_cell_test_response_meanAllStim.csv"), row.names = FALSE)
+write.csv(
+  per_cell_A,
+  file.path(save_results_dir, "per_cell_test_max_cumsum_stim1.csv"),
+  row.names = FALSE
+)
 
-write.csv(contrast_A, file.path(save_results_dir, "contrast_A_test_stim1_spaced_vs_massed.csv"), row.names = FALSE)
-write.csv(contrast_B, file.path(save_results_dir, "contrast_B_test_meanStim1to3_spaced_vs_massed.csv"), row.names = FALSE)
-write.csv(contrast_C, file.path(save_results_dir, "contrast_C_test_meanAllStim_spaced_vs_massed.csv"), row.names = FALSE)
+write.csv(
+  per_cell_B_raw,
+  file.path(save_results_dir, "per_cell_test_max_cumsum_stim1to3.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  per_cell_B,
+  file.path(save_results_dir, "per_cell_test_max_cumsum_stim1to3_aggregated.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  per_cell_C_raw,
+  file.path(save_results_dir, "per_cell_test_max_cumsum_meanAllStim_raw.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  per_cell_C,
+  file.path(save_results_dir, "per_cell_test_max_cumsum_meanAllStim.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  contrast_A,
+  file.path(save_results_dir, "contrast_A_test_stim1_spaced_vs_massed_max_cumsum.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  contrast_B,
+  file.path(save_results_dir, "contrast_B_test_meanStim1to3_spaced_vs_massed_max_cumsum.csv"),
+  row.names = FALSE
+)
+
+write.csv(
+  contrast_C,
+  file.path(save_results_dir, "contrast_C_test_meanAllStim_spaced_vs_massed_max_cumsum.csv"),
+  row.names = FALSE
+)
 
 cat("\n--- Contrast A: first test stimulus ---\n")
 print(contrast_A)
@@ -549,26 +668,25 @@ print(contrast_C)
 
 
 # ==============================================================================
-# 7. Plots: memory contrasts A, B, C
+# 9. Plots for contrasts A, B, C
 # ==============================================================================
 
 p_per_cell_A <- per_cell_A %>%
-  ggplot(aes(x = Training, y = prob,
+  ggplot(aes(x = Training, y = max_cumsum,
              ymin = lower, ymax = upper,
              color = Genotype)) +
   facet_wrap(~ Genotype, ncol = 5) +
   geom_pointrange(linewidth = 0.8, size = 0.7) +
-  coord_cartesian(ylim = c(0, 1)) +
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "P(move) at stim 1 of test block",
-    title = "(A) Test response at first stimulus: lower = better retention"
+    y = "Predicted max_cumsum at stim 1 of test block",
+    title = "(A) Test summed distance at first stimulus: lower = better retention"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastA_per_cell_test_stim1.png"),
+  file.path(save_fig_dir, "contrastA_per_cell_test_stim1_max_cumsum.png"),
   p_per_cell_A, width = 12, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -583,34 +701,33 @@ p_contrast_A <- contrast_A %>%
   theme_pubr(base_size = 14) +
   labs(
     x = NULL,
-    y = "P(move) difference at stim 1: spaced - massed\nNegative = spaced has better retention",
+    y = "max_cumsum difference at stim 1: spaced - massed\nNegative = spaced has better retention",
     title = "(A) Headline contrast: stim 1 of test block"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastA_diff_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "contrastA_diff_spaced_vs_massed_max_cumsum.png"),
   p_contrast_A, width = 8, height = 5, dpi = 300, bg = "white"
 )
 
 
 p_per_cell_B <- per_cell_B %>%
-  ggplot(aes(x = Training, y = prob,
+  ggplot(aes(x = Training, y = max_cumsum,
              ymin = lower, ymax = upper,
              color = Genotype)) +
   facet_wrap(~ Genotype, ncol = 5) +
   geom_pointrange(linewidth = 0.8, size = 0.7) +
-  coord_cartesian(ylim = c(0, 1)) +
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Mean P(move) over stim 1-3 of test block",
-    title = "(B) Test response averaged over first 3 stimuli"
+    y = "Mean predicted max_cumsum over stim 1-3 of test block",
+    title = "(B) Test summed distance averaged over first 3 stimuli"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastB_per_cell_test_stim1to3.png"),
+  file.path(save_fig_dir, "contrastB_per_cell_test_stim1to3_max_cumsum.png"),
   p_per_cell_B, width = 12, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -625,34 +742,33 @@ p_contrast_B <- contrast_B %>%
   theme_pubr(base_size = 14) +
   labs(
     x = NULL,
-    y = "Mean P(move) difference over stim 1-3: spaced - massed\nNegative = spaced has better retention",
+    y = "Mean max_cumsum difference over stim 1-3: spaced - massed\nNegative = spaced has better retention",
     title = "(B) Averaged contrast: mean of stim 1-3"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastB_diff_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "contrastB_diff_spaced_vs_massed_max_cumsum.png"),
   p_contrast_B, width = 8, height = 5, dpi = 300, bg = "white"
 )
 
 
 p_per_cell_C <- per_cell_C %>%
-  ggplot(aes(x = Training, y = prob,
+  ggplot(aes(x = Training, y = max_cumsum,
              ymin = lower, ymax = upper,
              color = Genotype)) +
   facet_wrap(~ Genotype, ncol = 5) +
   geom_pointrange(linewidth = 0.8, size = 0.7) +
-  coord_cartesian(ylim = c(0, 1)) +
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Mean P(move) over all shared test stimuli 1-8",
-    title = "(C) Test response averaged over all shared test stimuli"
+    y = "Mean predicted max_cumsum over all shared test stimuli 1-8",
+    title = "(C) Test summed distance averaged over all shared test stimuli"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastC_per_cell_test_meanAllStim.png"),
+  file.path(save_fig_dir, "contrastC_per_cell_test_meanAllStim_max_cumsum.png"),
   p_per_cell_C, width = 12, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -667,19 +783,19 @@ p_contrast_C <- contrast_C %>%
   theme_pubr(base_size = 14) +
   labs(
     x = NULL,
-    y = "Mean P(move) difference over stim 1-8: spaced - massed\nNegative = spaced has better retention",
+    y = "Mean max_cumsum difference over stim 1-8: spaced - massed\nNegative = spaced has better retention",
     title = "(C) Averaged contrast: mean of all shared test stimuli"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastC_diff_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "contrastC_diff_spaced_vs_massed_max_cumsum.png"),
   p_contrast_C, width = 8, height = 5, dpi = 300, bg = "white"
 )
 
 
 # ==============================================================================
-# 8. Contrast D: inter-block recovery with joint-covariance SEs
+# 10. Contrast D: inter-block recovery with joint-covariance SEs
 # ==============================================================================
 
 last_train_stim <- df_all %>%
@@ -716,12 +832,12 @@ recovery_grid_small <- bind_rows(
   mutate(
     stimulus_log = log(stimulus),
     Training = factor(Training, levels = levels(df_all$Training)),
-    Block    = factor(Block,    levels = levels(df_all$Block))
+    Block    = factor(Block, levels = levels(df_all$Block))
   )
 
 
 emm_D <- emmeans(
-  m_joint,
+  m_joint_summed,
   specs = ~ Genotype * Training * Block * stimulus_log,
   at = list(
     stimulus_log = sort(unique(recovery_grid_small$stimulus_log)),
@@ -732,7 +848,6 @@ emm_D <- emmeans(
 
 emm_D_resp <- regrid(emm_D, transform = "response")
 emm_D_df   <- as.data.frame(emm_D_resp)
-
 
 emm_D_df$point <- NA_character_
 
@@ -752,36 +867,27 @@ keep_D       <- !is.na(emm_D_df$point)
 emm_D_sub    <- emm_D_resp[keep_D]
 emm_D_df_sub <- emm_D_df[keep_D, ]
 
-
-estimate_col_D_raw <- c("prob", "response", "emmean", "estimate")[
-  c("prob", "response", "emmean", "estimate") %in% names(emm_D_df_sub)
-][1]
+est_col_D_raw <- get_response_est_col(emm_D_df_sub)
 
 per_cell_D <- emm_D_df_sub %>%
   as_tibble() %>%
   mutate(
     point    = emm_D_df_sub$point,
-    prob     = .data[[estimate_col_D_raw]],
+    max_cumsum = .data[[est_col_D_raw]],
     stimulus = exp(stimulus_log),
-    lower    = pmax(0, prob - 1.96 * SE),
-    upper    = pmin(1, prob + 1.96 * SE)
+    lower    = pmax(0, max_cumsum - 1.96 * SE),
+    upper    = max_cumsum + 1.96 * SE
   ) %>%
-  select(Genotype, Training, Block, point, stimulus, prob, SE, lower, upper)
+  select(Genotype, Training, Block, point, stimulus, max_cumsum, SE, lower, upper)
 
 print(per_cell_D)
 
 write.csv(
   per_cell_D,
-  file.path(save_results_dir, "per_cell_endTrain_startTest.csv"),
+  file.path(save_results_dir, "per_cell_endTrain_startTest_max_cumsum.csv"),
   row.names = FALSE
 )
 
-
-# ------------------------------------------------------------------------------
-# D raw recovery:
-#   recovery = P(start_test) - P(end_train)
-#   contrast = recovery_spaced - recovery_massed
-# ------------------------------------------------------------------------------
 
 genotypes_D <- levels(droplevels(emm_D_df_sub$Genotype))
 n_cells_D   <- nrow(emm_D_df_sub)
@@ -814,25 +920,11 @@ con_D_raw <- contrast(emm_D_sub, method = con_list_D_raw)
 con_D_raw_ci <- as.data.frame(confint(con_D_raw))
 con_D_raw_p  <- as.data.frame(con_D_raw)
 
-est_col_D <- c("estimate", "Estimate")[
-  c("estimate", "Estimate") %in% names(con_D_raw_ci)
-][1]
-
-lo_col_D <- c("asymp.LCL", "lower.CL", "LCL")[
-  c("asymp.LCL", "lower.CL", "LCL") %in% names(con_D_raw_ci)
-][1]
-
-hi_col_D <- c("asymp.UCL", "upper.CL", "UCL")[
-  c("asymp.UCL", "upper.CL", "UCL") %in% names(con_D_raw_ci)
-][1]
-
-z_col_D <- c("z.ratio", "t.ratio")[
-  c("z.ratio", "t.ratio") %in% names(con_D_raw_p)
-][1]
-
-p_col_D <- c("p.value", "pvalue")[
-  c("p.value", "pvalue") %in% names(con_D_raw_p)
-][1]
+est_col_D <- c("estimate", "Estimate")[c("estimate", "Estimate") %in% names(con_D_raw_ci)][1]
+lo_col_D  <- c("asymp.LCL", "lower.CL", "LCL")[c("asymp.LCL", "lower.CL", "LCL") %in% names(con_D_raw_ci)][1]
+hi_col_D  <- c("asymp.UCL", "upper.CL", "UCL")[c("asymp.UCL", "upper.CL", "UCL") %in% names(con_D_raw_ci)][1]
+z_col_D   <- c("z.ratio", "t.ratio")[c("z.ratio", "t.ratio") %in% names(con_D_raw_p)][1]
+p_col_D   <- c("p.value", "pvalue")[c("p.value", "pvalue") %in% names(con_D_raw_p)][1]
 
 contrast_D_raw <- tibble(
   Genotype  = factor(con_D_raw_ci$contrast, levels = genotypes_D),
@@ -849,36 +941,16 @@ print(contrast_D_raw)
 
 write.csv(
   contrast_D_raw,
-  file.path(save_results_dir, "contrast_D_raw_recovery_spaced_vs_massed.csv"),
+  file.path(save_results_dir, "contrast_D_raw_recovery_spaced_vs_massed_max_cumsum.csv"),
   row.names = FALSE
 )
 
 
-# ------------------------------------------------------------------------------
-# D normalized recovery: nonlinear delta method using full covariance
-#   recovery_norm = (P(start_test) - P(end_train)) / (1 - P(end_train))
-# ------------------------------------------------------------------------------
+# Normalized recovery:
+#   recovery_norm = (max_cumsum_start_test - max_cumsum_end_train) / max_cumsum_end_train
+#                 = max_cumsum_start_test / max_cumsum_end_train - 1
 
-finite_diff_gradient <- function(f, x, eps = 1e-6) {
-  grad <- numeric(length(x))
-  
-  for (i in seq_along(x)) {
-    x_hi <- x
-    x_lo <- x
-    
-    step <- eps * max(1, abs(x[i]))
-    
-    x_hi[i] <- x_hi[i] + step
-    x_lo[i] <- x_lo[i] - step
-    
-    grad[i] <- (f(x_hi) - f(x_lo)) / (2 * step)
-  }
-  
-  grad
-}
-
-
-beta_D <- as.numeric(emm_D_df_sub[[estimate_col_D_raw]])
+beta_D <- as.numeric(emm_D_df_sub[[est_col_D_raw]])
 V_D    <- vcov(emm_D_sub)
 
 contrast_D_norm <- bind_rows(lapply(genotypes_D, function(g) {
@@ -890,24 +962,24 @@ contrast_D_norm <- bind_rows(lapply(genotypes_D, function(g) {
   
   idx <- c(idx_ss, idx_se, idx_ms, idx_me)
   
-  f_norm <- function(p) {
-    p_ss <- p[1]
-    p_se <- p[2]
-    p_ms <- p[3]
-    p_me <- p[4]
+  f_norm <- function(x) {
+    x_ss <- x[1]
+    x_se <- x[2]
+    x_ms <- x[3]
+    x_me <- x[4]
     
-    rec_spaced <- (p_ss - p_se) / (1 - p_se)
-    rec_massed <- (p_ms - p_me) / (1 - p_me)
+    rec_spaced <- (x_ss - x_se) / x_se
+    rec_massed <- (x_ms - x_me) / x_me
     
     rec_spaced - rec_massed
   }
   
-  p_hat <- beta_D[idx]
+  x_hat <- beta_D[idx]
   V_hat <- V_D[idx, idx, drop = FALSE]
   
-  est <- f_norm(p_hat)
-  grad <- finite_diff_gradient(f_norm, p_hat)
-  se <- sqrt(as.numeric(t(grad) %*% V_hat %*% grad))
+  est  <- f_norm(x_hat)
+  grad <- finite_diff_gradient(f_norm, x_hat)
+  se   <- sqrt(as.numeric(t(grad) %*% V_hat %*% grad))
   
   tibble(
     Genotype  = factor(g, levels = genotypes_D),
@@ -925,36 +997,35 @@ print(contrast_D_norm)
 
 write.csv(
   contrast_D_norm,
-  file.path(save_results_dir, "contrast_D_normalized_recovery_spaced_vs_massed.csv"),
+  file.path(save_results_dir, "contrast_D_normalized_recovery_spaced_vs_massed_max_cumsum.csv"),
   row.names = FALSE
 )
 
 
-# Descriptive per-cell recovery summaries for plotting only
 recovery_per_cell <- per_cell_D %>%
-  select(Genotype, Training, point, prob, SE) %>%
-  pivot_wider(names_from = point, values_from = c(prob, SE)) %>%
+  select(Genotype, Training, point, max_cumsum, SE) %>%
+  pivot_wider(names_from = point, values_from = c(max_cumsum, SE)) %>%
   mutate(
-    recovery       = prob_start_test - prob_end_train,
+    recovery       = max_cumsum_start_test - max_cumsum_end_train,
     recovery_SE    = sqrt(SE_start_test^2 + SE_end_train^2),
     recovery_low   = recovery - 1.96 * recovery_SE,
     recovery_high  = recovery + 1.96 * recovery_SE,
     
-    recovery_norm      = recovery / (1 - prob_end_train),
-    recovery_norm_SE   = recovery_SE / (1 - prob_end_train),
+    recovery_norm      = recovery / max_cumsum_end_train,
+    recovery_norm_SE   = recovery_SE / max_cumsum_end_train,
     recovery_norm_low  = recovery_norm - 1.96 * recovery_norm_SE,
     recovery_norm_high = recovery_norm + 1.96 * recovery_norm_SE
   )
 
 write.csv(
   recovery_per_cell,
-  file.path(save_results_dir, "recovery_per_cell.csv"),
+  file.path(save_results_dir, "recovery_per_cell_max_cumsum.csv"),
   row.names = FALSE
 )
 
 
 # ==============================================================================
-# 9. Plots for contrast D
+# 11. Plots for Contrast D
 # ==============================================================================
 
 p_per_cell_D <- per_cell_D %>%
@@ -965,18 +1036,17 @@ p_per_cell_D <- per_cell_D %>%
       labels = c("End of training", "Start of test")
     )
   ) %>%
-  ggplot(aes(x = point_label, y = prob,
+  ggplot(aes(x = point_label, y = max_cumsum,
              ymin = lower, ymax = upper,
              color = Genotype, group = Training)) +
   facet_grid(Genotype ~ Training) +
   geom_pointrange(linewidth = 0.7, size = 0.6) +
   geom_line(linewidth = 0.6, linetype = "dashed", alpha = 0.7) +
-  coord_cartesian(ylim = c(0, 1)) +
   theme_pubr(base_size = 12) +
   labs(
     x = NULL,
-    y = "P(move)",
-    title = "End-of-training vs start-of-test response per protocol"
+    y = "Predicted max_cumsum",
+    title = "End-of-training vs start-of-test summed distance per protocol"
   ) +
   theme(
     legend.position = "none",
@@ -984,7 +1054,7 @@ p_per_cell_D <- per_cell_D %>%
   )
 
 ggsave(
-  file.path(save_fig_dir, "contrastD_per_cell_endTrain_startTest.png"),
+  file.path(save_fig_dir, "contrastD_per_cell_endTrain_startTest_max_cumsum.png"),
   p_per_cell_D, width = 9, height = 11, dpi = 300, bg = "white"
 )
 
@@ -1000,13 +1070,13 @@ p_recovery_per_cell <- recovery_per_cell %>%
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Raw recovery = P(start_test) - P(end_train)",
-    title = "(D) Inter-block recovery per protocol: lower = better memory"
+    y = "Raw recovery = max_cumsum(start_test) - max_cumsum(end_train)",
+    title = "(D) Inter-block max_cumsum recovery per protocol: lower = better memory"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastD_raw_recovery_per_cell.png"),
+  file.path(save_fig_dir, "contrastD_raw_recovery_per_cell_max_cumsum.png"),
   p_recovery_per_cell, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -1019,17 +1089,16 @@ p_recovery_norm_per_cell <- recovery_per_cell %>%
   facet_wrap(~ Genotype, ncol = 3) +
   geom_pointrange(linewidth = 0.8, size = 0.7) +
   geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
-  geom_hline(yintercept = 1, linetype = "dotted", color = "grey50") +
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Normalized recovery",
-    title = "(D-norm) Normalized inter-block recovery per protocol"
+    y = "Normalized recovery = recovery / max_cumsum(end_train)",
+    title = "(D-norm) Normalized inter-block max_cumsum recovery per protocol"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastD_normalized_recovery_per_cell.png"),
+  file.path(save_fig_dir, "contrastD_normalized_recovery_per_cell_max_cumsum.png"),
   p_recovery_norm_per_cell, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -1044,13 +1113,13 @@ p_contrast_D_raw <- contrast_D_raw %>%
   theme_pubr(base_size = 14) +
   labs(
     x = NULL,
-    y = "Raw recovery difference: spaced - massed\nNegative = spaced recovers less = better retention",
-    title = "(D) Recovery contrast: raw"
+    y = "Raw max_cumsum recovery difference: spaced - massed\nNegative = spaced recovers less = better retention",
+    title = "(D) Recovery contrast: raw max_cumsum"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastD_raw_diff_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "contrastD_raw_diff_spaced_vs_massed_max_cumsum.png"),
   p_contrast_D_raw, width = 8, height = 5, dpi = 300, bg = "white"
 )
 
@@ -1065,19 +1134,19 @@ p_contrast_D_norm <- contrast_D_norm %>%
   theme_pubr(base_size = 14) +
   labs(
     x = NULL,
-    y = "Normalized recovery difference: spaced - massed\nNegative = spaced recovers less = better retention",
-    title = "(D-norm) Recovery contrast: normalized"
+    y = "Normalized max_cumsum recovery difference: spaced - massed\nNegative = spaced recovers less = better retention",
+    title = "(D-norm) Recovery contrast: normalized max_cumsum"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "contrastD_norm_diff_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "contrastD_norm_diff_spaced_vs_massed_max_cumsum.png"),
   p_contrast_D_norm, width = 8, height = 5, dpi = 300, bg = "white"
 )
 
 
 # ==============================================================================
-# 10. Combined memory contrast table and plot
+# 12. Combined contrast table and plot
 # ==============================================================================
 
 all_contrasts <- bind_rows(
@@ -1102,7 +1171,7 @@ all_contrasts <- bind_rows(
 
 write.csv(
   all_contrasts,
-  file.path(save_results_dir, "ALL_contrasts_spaced_vs_massed.csv"),
+  file.path(save_results_dir, "ALL_contrasts_spaced_vs_massed_max_cumsum.csv"),
   row.names = FALSE
 )
 
@@ -1117,26 +1186,26 @@ p_all_contrasts <- all_contrasts %>%
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Spaced - massed difference\nNegative = spaced has better retention",
-    title = "All response-probability memory contrasts"
+    y = "Spaced - massed max_cumsum difference\nNegative = spaced has better retention",
+    title = "All max_cumsum memory contrasts"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "ALL_contrasts_spaced_vs_massed.png"),
+  file.path(save_fig_dir, "ALL_contrasts_spaced_vs_massed_max_cumsum.png"),
   p_all_contrasts, width = 9, height = 12, dpi = 300, bg = "white"
 )
 
-cat("\n--- All response-probability contrasts ---\n")
+cat("\n--- All max_cumsum contrasts ---\n")
 print(all_contrasts)
 
 
 # ==============================================================================
-# 11. Supplementary contrasts
+# 13. Supplementary contrasts
 # ==============================================================================
 
 # ------------------------------------------------------------------------------
-# 11.1 Training sanity check: start vs end of Block 1
+# 13.1 Training sanity check: start vs end of Block 1
 # ------------------------------------------------------------------------------
 
 last_b1_stim <- df_all %>%
@@ -1146,7 +1215,6 @@ last_b1_stim <- df_all %>%
 
 last_b1_massed <- last_b1_stim$last_stim[last_b1_stim$Training == "massed"]
 last_b1_spaced <- last_b1_stim$last_stim[last_b1_stim$Training == "spaced"]
-
 
 training_grid_small <- tibble(
   Training = rep(c("massed", "spaced"), each = 2),
@@ -1162,7 +1230,7 @@ training_grid_small <- tibble(
 
 
 emm_S <- emmeans(
-  m_joint,
+  m_joint_summed,
   specs = ~ Genotype * Training * Block * stimulus_log,
   at = list(
     stimulus_log = sort(unique(training_grid_small$stimulus_log)),
@@ -1192,20 +1260,18 @@ keep_S       <- !is.na(emm_S_df$point)
 emm_S_sub    <- emm_S_resp[keep_S]
 emm_S_df_sub <- emm_S_df[keep_S, ]
 
-estimate_col_S_raw <- c("prob", "response", "emmean", "estimate")[
-  c("prob", "response", "emmean", "estimate") %in% names(emm_S_df_sub)
-][1]
+est_col_S_raw <- get_response_est_col(emm_S_df_sub)
 
 training_per_cell <- emm_S_df_sub %>%
   as_tibble() %>%
   mutate(
     point    = emm_S_df_sub$point,
-    prob     = .data[[estimate_col_S_raw]],
+    max_cumsum = .data[[est_col_S_raw]],
     stimulus = exp(stimulus_log),
-    lower    = pmax(0, prob - 1.96 * SE),
-    upper    = pmin(1, prob + 1.96 * SE)
+    lower    = pmax(0, max_cumsum - 1.96 * SE),
+    upper    = max_cumsum + 1.96 * SE
   ) %>%
-  select(Genotype, Training, Block, point, stimulus, prob, SE, lower, upper)
+  select(Genotype, Training, Block, point, stimulus, max_cumsum, SE, lower, upper)
 
 
 combos_S <- training_per_cell %>%
@@ -1239,35 +1305,21 @@ con_S <- contrast(emm_S_sub, method = con_list_S)
 con_S_ci <- as.data.frame(confint(con_S))
 con_S_p  <- as.data.frame(con_S)
 
-est_col_S <- c("estimate", "Estimate")[
-  c("estimate", "Estimate") %in% names(con_S_ci)
-][1]
-
-lo_col_S <- c("asymp.LCL", "lower.CL", "LCL")[
-  c("asymp.LCL", "lower.CL", "LCL") %in% names(con_S_ci)
-][1]
-
-hi_col_S <- c("asymp.UCL", "upper.CL", "UCL")[
-  c("asymp.UCL", "upper.CL", "UCL") %in% names(con_S_ci)
-][1]
-
-z_col_S <- c("z.ratio", "t.ratio")[
-  c("z.ratio", "t.ratio") %in% names(con_S_p)
-][1]
-
-p_col_S <- c("p.value", "pvalue")[
-  c("p.value", "pvalue") %in% names(con_S_p)
-][1]
+est_col_S <- c("estimate", "Estimate")[c("estimate", "Estimate") %in% names(con_S_ci)][1]
+lo_col_S  <- c("asymp.LCL", "lower.CL", "LCL")[c("asymp.LCL", "lower.CL", "LCL") %in% names(con_S_ci)][1]
+hi_col_S  <- c("asymp.UCL", "upper.CL", "UCL")[c("asymp.UCL", "upper.CL", "UCL") %in% names(con_S_ci)][1]
+z_col_S   <- c("z.ratio", "t.ratio")[c("z.ratio", "t.ratio") %in% names(con_S_p)][1]
+p_col_S   <- c("p.value", "pvalue")[c("p.value", "pvalue") %in% names(con_S_p)][1]
 
 training_learning <- con_S_ci %>%
   as_tibble() %>%
   mutate(
-    contrast     = as.character(contrast),
-    Genotype     = sapply(strsplit(contrast, "\\|"), `[`, 1),
-    Training     = sapply(strsplit(contrast, "\\|"), `[`, 2),
-    learning_est = .data[[est_col_S]],
-    learning_se  = SE,
-    learning_low = .data[[lo_col_S]],
+    contrast      = as.character(contrast),
+    Genotype      = sapply(strsplit(contrast, "\\|"), `[`, 1),
+    Training      = sapply(strsplit(contrast, "\\|"), `[`, 2),
+    learning_est  = .data[[est_col_S]],
+    learning_se   = SE,
+    learning_low  = .data[[lo_col_S]],
     learning_high = .data[[hi_col_S]]
   ) %>%
   left_join(
@@ -1284,7 +1336,7 @@ print(training_learning)
 
 write.csv(
   training_learning,
-  file.path(save_results_dir, "training_sanity_check_block1_learning.csv"),
+  file.path(save_results_dir, "training_sanity_check_block1_learning_max_cumsum.csv"),
   row.names = FALSE
 )
 
@@ -1298,26 +1350,26 @@ p_training_sanity <- training_learning %>%
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "P(end B1) - P(start B1)\nNegative = learning occurred",
-    title = "Training sanity check: within-Block-1 learning"
+    y = "max_cumsum(end B1) - max_cumsum(start B1)\nNegative = summed movement decreased",
+    title = "Training sanity check: within-Block-1 change in max_cumsum"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "sanity_check_block1_learning.png"),
+  file.path(save_fig_dir, "sanity_check_block1_learning_max_cumsum.png"),
   p_training_sanity, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
 
 # ------------------------------------------------------------------------------
-# 11.2 Latent-scale slope contrast in Block 1
+# 13.2 Within-training max_cumsum slope contrast
 # ------------------------------------------------------------------------------
 
 slope_emm <- emtrends(
-  m_joint,
+  m_joint_summed,
   specs = ~ Genotype * Training | Block,
-  var = "stimulus_log",
-  at = list(Block = "1")
+  var   = "stimulus_log",
+  at    = list(Block = "1")
 )
 
 slope_df <- as_tibble(confint(slope_emm)) %>%
@@ -1333,7 +1385,7 @@ print(slope_df)
 
 write.csv(
   slope_df,
-  file.path(save_results_dir, "training_slope_block1.csv"),
+  file.path(save_results_dir, "training_slope_block1_max_cumsum.csv"),
   row.names = FALSE
 )
 
@@ -1358,7 +1410,7 @@ print(slope_pairs_df)
 
 write.csv(
   slope_pairs_df,
-  file.path(save_results_dir, "training_slope_diff_spaced_vs_massed.csv"),
+  file.path(save_results_dir, "training_slope_diff_spaced_vs_massed_max_cumsum.csv"),
   row.names = FALSE
 )
 
@@ -1372,19 +1424,19 @@ p_slope <- slope_df %>%
   theme_pubr(base_size = 13) +
   labs(
     x = NULL,
-    y = "Habituation slope d(logit P)/d(log stim) in Block 1",
-    title = "Within-Block-1 habituation rate per protocol"
+    y = "Habituation slope d(log max_cumsum)/d(log stim) in Block 1\nMore negative = faster reduction",
+    title = "Within-Block-1 max_cumsum habituation rate per protocol"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "training_slope_block1_per_protocol.png"),
+  file.path(save_fig_dir, "training_slope_block1_per_protocol_max_cumsum.png"),
   p_slope, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
 
 # ------------------------------------------------------------------------------
-# 11.3 Spaced-only end-of-block progression
+# 13.3 Block-by-block learning curve, spaced only
 # ------------------------------------------------------------------------------
 
 spaced_last_stim_per_block <- df_all %>%
@@ -1411,8 +1463,9 @@ spaced_endblock_grid <- tidyr::expand_grid(
     Genotype = factor(Genotype, levels = levels(df_all$Genotype))
   )
 
+
 emm_endblock <- emmeans(
-  m_joint,
+  m_joint_summed,
   specs = ~ Genotype * Training * Block * stimulus_log,
   at = list(
     Training = "spaced",
@@ -1425,7 +1478,6 @@ emm_endblock <- emmeans(
 emm_endblock_resp <- regrid(emm_endblock, transform = "response")
 emm_endblock_df <- as.data.frame(emm_endblock_resp)
 
-# Keep only matching block-specific last stimuli
 emm_endblock_df$keep <- FALSE
 
 for (i in seq_len(nrow(spaced_endblock_grid))) {
@@ -1444,31 +1496,28 @@ for (i in seq_len(nrow(spaced_endblock_grid))) {
 emm_endblock_sub <- emm_endblock_resp[emm_endblock_df$keep]
 emm_endblock_df_sub <- emm_endblock_df[emm_endblock_df$keep, ]
 
-estimate_col_end <- c("prob", "response", "emmean", "estimate")[
-  c("prob", "response", "emmean", "estimate") %in% names(emm_endblock_df_sub)
-][1]
+est_col_end <- get_response_est_col(emm_endblock_df_sub)
 
 spaced_endblock_result <- emm_endblock_df_sub %>%
   as_tibble() %>%
   mutate(
-    prob = .data[[estimate_col_end]],
+    max_cumsum = .data[[est_col_end]],
     stimulus = exp(stimulus_log),
     block_num = as.integer(as.character(Block)),
-    lower = pmax(0, prob - 1.96 * SE),
-    upper = pmin(1, prob + 1.96 * SE)
+    lower = pmax(0, max_cumsum - 1.96 * SE),
+    upper = max_cumsum + 1.96 * SE
   ) %>%
-  select(Genotype, Block, block_num, stimulus, prob, SE, lower, upper)
+  select(Genotype, Block, block_num, stimulus, max_cumsum, SE, lower, upper)
 
 print(spaced_endblock_result)
 
 write.csv(
   spaced_endblock_result,
-  file.path(save_results_dir, "spaced_endblock_response.csv"),
+  file.path(save_results_dir, "spaced_endblock_max_cumsum.csv"),
   row.names = FALSE
 )
 
 
-# Block-to-block changes using joint covariance
 emm_end_df <- as.data.frame(emm_endblock_sub)
 genotypes_end <- levels(droplevels(emm_end_df$Genotype))
 
@@ -1514,30 +1563,29 @@ print(spaced_block_diffs)
 
 write.csv(
   spaced_block_diffs,
-  file.path(save_results_dir, "spaced_block_to_block_endblock_changes.csv"),
+  file.path(save_results_dir, "spaced_block_to_block_endblock_changes_max_cumsum.csv"),
   row.names = FALSE
 )
 
 
 p_spaced_endblock <- spaced_endblock_result %>%
-  ggplot(aes(x = block_num, y = prob,
+  ggplot(aes(x = block_num, y = max_cumsum,
              ymin = lower, ymax = upper,
              color = Genotype, group = Genotype)) +
   facet_wrap(~ Genotype, ncol = 3) +
   geom_pointrange(linewidth = 0.7, size = 0.6) +
   geom_line(linewidth = 0.6) +
   scale_x_continuous(breaks = 1:4) +
-  coord_cartesian(ylim = c(0, 1)) +
   theme_pubr(base_size = 13) +
   labs(
     x = "Spaced training block",
-    y = "P(move) at end of block",
-    title = "Spaced training: end-of-block response across blocks 1-4"
+    y = "Predicted max_cumsum at end of block",
+    title = "Spaced training: end-of-block max_cumsum across blocks 1-4"
   ) +
   theme(legend.position = "none")
 
 ggsave(
-  file.path(save_fig_dir, "spaced_endblock_progression.png"),
+  file.path(save_fig_dir, "spaced_endblock_progression_max_cumsum.png"),
   p_spaced_endblock, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -1552,8 +1600,8 @@ p_spaced_diffs <- spaced_block_diffs %>%
   theme_pubr(base_size = 13) +
   labs(
     x = "Block-to-block transition",
-    y = "Change in end-of-block P(move)\nNegative = further habituation",
-    title = "Spaced training: incremental habituation per block"
+    y = "Change in end-of-block max_cumsum\nNegative = further reduction",
+    title = "Spaced training: incremental max_cumsum reduction per block"
   ) +
   theme(
     legend.position = "none",
@@ -1561,7 +1609,7 @@ p_spaced_diffs <- spaced_block_diffs %>%
   )
 
 ggsave(
-  file.path(save_fig_dir, "spaced_block_to_block_changes.png"),
+  file.path(save_fig_dir, "spaced_block_to_block_changes_max_cumsum.png"),
   p_spaced_diffs, width = 10, height = 4.5, dpi = 300, bg = "white"
 )
 
@@ -1570,6 +1618,6 @@ ggsave(
 # Done
 # ==============================================================================
 
-message("Joint GLMM response-probability analysis complete.")
+message("Joint Gamma GLMM max_cumsum analysis complete.")
 message("Results saved under: ", save_results_dir)
 message("Figures saved under: ", save_fig_dir)

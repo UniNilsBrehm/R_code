@@ -1,3 +1,41 @@
+# Layout settings for figures
+library(viridis)
+genotype_colors <- c(
+  "ABTL" = "#440154",
+  "tyr" = "#3B528B",
+  "th2, tyr" = "#21908C",
+  "th, tyr" = "#5DC863",
+  "th, th2, tyr" = "#FDE725"
+)
+
+theme_pub <- function(base_size = 15) {
+  theme_classic(base_size = base_size) +
+    theme(
+      plot.title = element_text(face = "bold", size = 22),
+      plot.subtitle = element_text(size = 16),
+      
+      axis.title.x = element_text(face = "bold", size = 18),
+      axis.title.y = element_text(face = "bold", size = 14),
+      axis.text.x = element_text(color = "black", size = 15),
+      axis.text.y = element_text(color = "black", size = 12),
+      
+      strip.background = element_blank(),
+      strip.text.x = element_text(face = "bold", size = 17),
+      strip.text.y.left = element_text(
+        face = "bold",
+        size = 14,
+        angle = 90,
+        margin = margin(r = 6, l = 6)
+      ),
+      strip.placement = "outside",
+      
+      panel.grid.major.y = element_line(color = "grey90", linewidth = 0.25),
+      panel.spacing.y = unit(1.0, "lines"),
+      panel.spacing.x = unit(0.7, "lines"),
+      plot.margin = margin(t = 10, r = 10, b = 35, l = 10)
+    )
+}
+
 # PLOT FUNCTIONS
 save_plot <- function(g_plot, file_dir, width=10, height=7, dpi=600){
   ggsave(
