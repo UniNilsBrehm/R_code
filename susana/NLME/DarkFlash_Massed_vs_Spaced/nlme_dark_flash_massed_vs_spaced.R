@@ -190,15 +190,15 @@ print(
 # because "the test block" maps to different literal Block labels in the two
 # experiments (Block 2 in massed, Block 5 in spaced).
 model_joint <- bf(
-  # move ~ inv_logit(A) + (inv_logit(R0) - inv_logit(A)) * exp(-exp(logk) * stimulus0)
+  move ~ inv_logit(A) + (inv_logit(R0) - inv_logit(A)) * exp(-exp(logk) * stimulus0)
   # move ~ inv_logit(A) + (inv_logit(R0) - inv_logit(A)) * (stimulus0 + 1)^(-exp(logalpha)),  # power law
-  move ~ inv_logit(A) + (inv_logit(R0) - inv_logit(A)) * exp(-exp(logk) * stimulus0^exp(logbeta)),  # strechted exp
+  # move ~ inv_logit(A) + (inv_logit(R0) - inv_logit(A)) * exp(-exp(logk) * stimulus0^exp(logbeta)),  # strechted exp
   
   A    ~ 1 + Genotype * Training * Block + (1 | animal),
   R0   ~ 1 + Genotype * Training * Block + (1 | animal),
   logk ~ 1 + Genotype * Training * Block + (1 | animal),
   # logalpha ~ 1 + Genotype * Training * Block + (1 | animal),
-  logbeta ~ 1 + Genotype * Training + (1 | animal),
+  # logbeta ~ 1 + Genotype * Training + (1 | animal),
   
   
   nl = TRUE
@@ -220,19 +220,19 @@ priors_joint <- c(
   prior(normal(1.5,  1.0), class = "b", coef = "Intercept", nlpar = "R0"),
   prior(normal(-1.5, 1.5), class = "b", coef = "Intercept", nlpar = "logk"),
   # prior(normal(-0.7, 0.6), class = "b", coef = "Intercept", nlpar = "logalpha"),
-  prior(normal(-0.3, 0.5), class = "b", coef = "Intercept", nlpar = "logbeta"),
+  # prior(normal(-0.3, 0.5), class = "b", coef = "Intercept", nlpar = "logbeta"),
   
   prior(normal(0, 0.75), class = "b", nlpar = "A"),
   prior(normal(0, 0.75), class = "b", nlpar = "R0"),
   prior(normal(0, 0.75), class = "b", nlpar = "logk"),
   # prior(normal(0, 0.4), class = "b", nlpar = "logalpha"),
-  prior(normal(0, 0.3), class = "b", nlpar = "logbeta"),
+  # prior(normal(0, 0.3), class = "b", nlpar = "logbeta"),
   
   prior(exponential(4), class = "sd", nlpar = "A"),
   prior(exponential(4), class = "sd", nlpar = "R0"),
-  prior(exponential(4), class = "sd", nlpar = "logk"),
+  prior(exponential(4), class = "sd", nlpar = "logk")
   # prior(exponential(6), class = "sd", nlpar = "logalpha")
-  prior(exponential(8), class = "sd", nlpar = "logbeta")
+  # prior(exponential(8), class = "sd", nlpar = "logbeta")
 )
 
 

@@ -14,18 +14,17 @@ library(loo)
 library(DHARMa)
 library(bayesplot)
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
-# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
 # source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
 # source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <-
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
@@ -35,6 +34,14 @@ file_dir <- file.path(
 
 var_name = 'response_delay'
 col_name = 'delay'
+
+save_fig_dir = file.path(base_dir, "figs", "nlme", var_name)
+save_results_dir = file.path(base_dir, "results", "nlme", var_name)
+
+# Create directories if they do not exist
+dir.create(save_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(save_results_dir, recursive = TRUE, showWarnings = FALSE)
+
 
 # ==============================================================================
 # Load and prepare data
@@ -267,7 +274,7 @@ fit_model_mm <- readRDS(
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-save_fig_dir <- NULL
+fit_model <- fit_model_exp
 
 # Population-level
 p_hab <- plot_habituation_ordinal(
@@ -275,7 +282,8 @@ p_hab <- plot_habituation_ordinal(
   response_var = "delay",
   raw_data = "trials",
   y_label = "Delay (Exp model)",
-  y_limits = c(0, 4)
+  y_limits = c(0, 4),
+  save_fig_dir = save_fig_dir
 )
 
 print(p_hab)
@@ -285,7 +293,8 @@ p_hab_agg <- plot_habituation_ordinal(
   response_var = "delay",
   raw_data = "aggregate",
   y_label = "Delay (Exp model)",
-  y_limits = c(0, 4)
+  y_limits = c(0, 4),
+  save_fig_dir = save_fig_dir
 )
 
 print(p_hab_agg)
@@ -297,6 +306,7 @@ p_hab_averaged <-plot_habituation_ordinal_animal_averaged(
   ndraws = 500,
   y_limits = c(0, 4),
   y_breaks = 0:4,
+  save_fig_dir = save_fig_dir
 )
 
 print(p_hab_averaged)

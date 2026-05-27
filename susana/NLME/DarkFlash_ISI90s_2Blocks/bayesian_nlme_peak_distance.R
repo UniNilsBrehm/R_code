@@ -14,17 +14,17 @@ library(loo)
 library(DHARMa)
 library(bayesplot)
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
 
-# source("C:/UniFreiburg/Code/R_code/susana/nlme_utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/plot_utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
 # source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
 # source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/WorkingData/Susana/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
 # base_dir <-
 
 file_dir <- file.path(
@@ -35,6 +35,13 @@ file_dir <- file.path(
 
 var_name = 'peak_distance'
 col_name = 'max_peak'
+
+save_fig_dir = file.path(base_dir, "figs", "nlme", var_name)
+save_results_dir = file.path(base_dir, "results", "nlme", var_name)
+
+# Create directories if they do not exist
+dir.create(save_fig_dir, recursive = TRUE, showWarnings = FALSE)
+dir.create(save_results_dir, recursive = TRUE, showWarnings = FALSE)
 
 # ==============================================================================
 # Load and prepare data
@@ -205,6 +212,7 @@ fit_model <- readRDS(
 # ==============================================================================
 
 diag_dir <- file.path(base_dir, "models", "diagnostics", var_name)
+dir.create(diag_dir, recursive = TRUE, showWarnings = FALSE)
 
 # Sampler diagnostics
 # Top-level summary
@@ -215,40 +223,46 @@ sum(subset(nuts_params(fit_model), Parameter == "divergent__")$Value)
 # 0 ideal, single digits tolerable, more is concerning
 
 # Energy diagnostics
-bayesplot::mcmc_nuts_energy(nuts_params(fit_model))
+energy_plot <- bayesplot::mcmc_nuts_energy(nuts_params(fit_model))
+ggsave(
+  filename = file.path(diag_dir, "nuts_energy.png"),
+  plot     = energy_plot,
+  width    = 8,
+  height   = 6,
+  dpi      = 300
+)
 
 # Posterior predictive check
-pp_check(fit_model, type = "dens_overlay", ndraws = 100)  # marginal fit
-pp_check(fit_model, type = "stat_grouped", group = "stimulus0",
-         stat = "median", ndraws = 100)             # does decay shape fit?
-pp_check(fit_model, type = "stat_grouped", group = "Genotype",
-         stat = "mean", ndraws = 100)               # do genotype means fit?
+ppc_marginal <- pp_check(fit_model, type = "dens_overlay", ndraws = 200)
+ppc_decay <- pp_check(fit_model, type = "stat_grouped", group = "stimulus0",
+                      stat = "median", ndraws = 200)
+ppc_genotype <- pp_check(fit_model, type = "stat_grouped", group = "Genotype",
+                         stat = "mean", ndraws = 200)
+ppc_list <- list(
+  ppc_marginal  = ppc_marginal,
+  ppc_decay     = ppc_decay,
+  ppc_genotype  = ppc_genotype
+)
+purrr::iwalk(ppc_list, ~ ggsave(
+  filename = file.path(diag_dir, paste0(.y, ".png")),
+  plot     = .x,
+  width    = 8,
+  height   = 6,
+  dpi      = 300
+))
 
-df_resp |>
-  add_predicted_draws(fit_model, ndraws = 200) |>
-  group_by(Genotype, Block, stimulus0) |>
-  median_qi(.prediction, .width = c(0.5, 0.9)) |>
-  ggplot(aes(x = stimulus0, y = .prediction)) +
-  geom_lineribbon(aes(ymin = .lower, ymax = .upper)) +
-  geom_point(
-    data = df_resp |>
-      group_by(Genotype, Block, stimulus0) |>
-      summarise(observed = median(max_peak), .groups = "drop"),
-    aes(x = stimulus0, y = observed),    # <-- added x = stimulus0
-    color = "red", size = 0.8, inherit.aes = FALSE
-  ) +
-  scale_fill_brewer() +
-  facet_grid(Block ~ Genotype) +
-  labs(y = "max_peak", x = "stimulus")
 
-# Conditional curves per genotype × block
-conditional_effects(fit_model, effects = "stimulus0:Genotype",
-                    conditions = data.frame(Block = c("Block1", "Block2")))
-
-bayesplot::mcmc_pairs(
+mcmc_pairs_plot <- bayesplot::mcmc_pairs(
   fit_model, np = nuts_params(fit_model),
   pars = c("b_logk_Intercept", "sd_animal__logk_Intercept"),
   off_diag_args = list(size = 0.5)
+)
+ggsave(
+  filename = file.path(diag_dir, "mcmc_pairs.png"),
+  plot     = mcmc_pairs_plot,
+  width    = 8,
+  height   = 6,
+  dpi      = 300
 )
 
 # Residuals
@@ -277,25 +291,43 @@ save_plot_as_png(
 loo_var <- loo(fit_model)
 
 print(loo_var)
+plot(loo_var)
 save_plot_as_png(
   paste0("nlme_", var_name, "_loo_plot.png"),
   quote(plot(loo_var))
 )
+# Identify which observations they are
+plot(loo_var, diagnostic = "k")
+
+# Or extract directly
+problematic <- which(loo_var$diagnostics$pareto_k > 0.7)
+df_resp[problematic, ]
+
 # loo_compare(loo1, loo2)  # compare models
 
 
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-save_fig_dir <- NULL
+p_hab_ind <- plot_habituation_response(
+  df_resp, fit_model,
+  response_var = "max_peak",
+  y_label = "Peak distance moved",
+  y_limits = c(0, 10),
+  raw_data = "individual",
+  ndraws        = 200, 
+  save_fig_dir = save_fig_dir
+)
+
+p_hab_ind
 
 p_hab <- plot_habituation_response(
   df_resp, fit_model,
   response_var = "max_peak",
   y_label = "Peak distance moved",
   y_limits = c(0, 10),
-  raw_data = "trials"
-  #raw_data = "aggregate"
+  raw_data = "trials",
+  save_fig_dir = save_fig_dir
 )
 
 p_hab
@@ -305,7 +337,8 @@ p_hab_agg <- plot_habituation_response(
   response_var = "max_peak",
   y_label = "Peak distance moved",
   y_limits = c(0, 10),
-  raw_data = "aggregate"
+  raw_data = "aggregate",
+  save_fig_dir = save_fig_dir
 )
 
 p_hab_agg
@@ -316,7 +349,8 @@ p_hab_averaged <- plot_habituation_response_animal_averaged(
   response_var = "max_peak",
   ndraws = 500,
   y_label = "Peak distance moved",
-  y_limits = c(0, 10)
+  y_limits = c(0, 10),
+  save_fig_dir = save_fig_dir
 )
 
 p_hab_averaged
