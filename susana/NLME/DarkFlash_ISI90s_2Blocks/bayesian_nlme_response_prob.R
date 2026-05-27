@@ -29,17 +29,17 @@ save_plot <- function(p, filename, width = 7, height = 5) {
 }
 # ==============================================================================
 
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/nlme_utils.R")
-# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/plot_utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
+source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
-source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
-source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
+# source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
 # source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
 # source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
-# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
+base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/NLME//DarkFlash_ISI90s_2Blocks"
+# base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
 # base_dir <- "D:/Behavior_Data/DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
@@ -329,9 +329,18 @@ for (i in seq_along(diag_plots)) {
 # ==============================================================================
 # Plot Habituation curves
 # ==============================================================================
-save_fig_dir <- NULL
+p_hab_ind <- plot_habituation_probability(
+  df_resp = df_resp,
+  fit_model = fit_model,
+  save_fig_dir = save_fig_dir,
+  var_name = var_name,
+  raw_data = "individual",
+  ndraws = 500
+)
 
-p_hab <- plot_habituation_probability(
+p_hab_ind
+
+p_hab_raw <- plot_habituation_probability(
   df_resp = df_resp,
   fit_model = fit_model,
   save_fig_dir = save_fig_dir,
@@ -339,7 +348,7 @@ p_hab <- plot_habituation_probability(
   raw_data = "binary"
 )
 
-p_hab
+p_hab_raw
 
 p_hab_agg <- plot_habituation_probability(
   df_resp = df_resp,
@@ -358,7 +367,7 @@ p_animal_avg <- plot_habituation_probability_animal_averaged(
   fit_model = fit_model,
   save_fig_dir = save_fig_dir,
   var_name = "response_prob",
-  ndraws = 300
+  ndraws = 500
 )
 
 print(p_animal_avg)
@@ -366,26 +375,27 @@ print(p_animal_avg)
 # ==============================================================================
 # Compare nonlinear model parameters
 # ==============================================================================
+
 # ==============================================================================
-# 1. Compare habituation rate k = exp(lk)
+# 1. Compare habituation rate k = exp(logk)
 # ==============================================================================
 k_draws_df <- make_nlpar_draws(
-  fit_model = fit_model,
-  df_resp = df_resp,
-  nlpar = "lk",
+  fit_model    = fit_model,
+  df_resp      = df_resp,
+  nlpar        = "logk",          # brms nlpar name in the model
   transform_fun = exp
 ) %>%
-  rename(k = value, lk = value_raw)
+  rename(k = value, logk = value_raw)
 
 k_summary <- k_draws_df %>%
   group_by(Genotype, Block) %>%
   summarise(
-    k_median = median(k),
-    k_low = quantile(k, 0.025),
-    k_high = quantile(k, 0.975),
+    k_median         = median(k),
+    k_low            = quantile(k, 0.025),
+    k_high           = quantile(k, 0.975),
     half_life_median = median(log(2) / k),
-    half_life_low = quantile(log(2) / k, 0.025),
-    half_life_high = quantile(log(2) / k, 0.975),
+    half_life_low    = quantile(log(2) / k, 0.025),
+    half_life_high   = quantile(log(2) / k, 0.975),
     .groups = "drop"
   )
 
@@ -414,16 +424,15 @@ write.csv(
 
 
 # ==============================================================================
-# 2. Compare asymptote pinf on probability scale
+# 2. Compare asymptote A on probability scale (pinf = inv_logit(A))
 # ==============================================================================
-
 pinf_draws_df <- make_nlpar_draws(
-  fit_model = fit_model,
-  df_resp = df_resp,
-  nlpar = "pinf",
-  transform_fun = plogis
+  fit_model     = fit_model,
+  df_resp       = df_resp,
+  nlpar         = "A",            # brms nlpar name in the model
+  transform_fun = plogis          # inv_logit
 ) %>%
-  rename(pinf = value, pinf_logit = value_raw)
+  rename(pinf = value, A_logit = value_raw)
 
 pinf_summary <- summarise_nlpar(
   pinf_draws_df %>% rename(value = pinf),
@@ -456,16 +465,15 @@ write.csv(
 
 
 # ==============================================================================
-# 3. Compare initial response probability p0
+# 3. Compare initial response probability R0 on probability scale (p0 = inv_logit(R0))
 # ==============================================================================
-
 p0_draws_df <- make_nlpar_draws(
-  fit_model = fit_model,
-  df_resp = df_resp,
-  nlpar = "p0",
-  transform_fun = plogis
+  fit_model     = fit_model,
+  df_resp       = df_resp,
+  nlpar         = "R0",           # brms nlpar name in the model
+  transform_fun = plogis          # inv_logit
 ) %>%
-  rename(p0 = value, p0_logit = value_raw)
+  rename(p0 = value, R0_logit = value_raw)
 
 p0_summary <- summarise_nlpar(
   p0_draws_df %>% rename(value = p0),
@@ -496,7 +504,6 @@ write.csv(
   row.names = FALSE
 )
 
-
 # ==============================================================================
 # 4. Plots
 # ==============================================================================
@@ -511,8 +518,8 @@ p_k <- plot_posterior_density(
   paste0("nlme_", var_name, "_k_posteriors.png"),
   save_fig_dir = save_fig_dir,
   block_limits = list(
-    Block1 = c(0, 2),
-    Block2 = c(0, 0.10)
+    Block1 = c(0, 1),
+    Block2 = c(0, 0.05)
   )
 )
 
@@ -561,7 +568,11 @@ p_pinf <- plot_posterior_density(
   "Posterior distributions of asymptote pinf",
   "Asymptote response probability pinf",
   paste0("nlme_", var_name, "_pinf_posteriors.png"),
-  save_fig_dir = save_fig_dir
+  save_fig_dir = save_fig_dir,
+  block_limits = list(
+    Block1 = c(0, 1),
+    Block2 = c(0, 1)
+  )
 )
 
 
@@ -584,7 +595,11 @@ p_p0 <- plot_posterior_density(
   "Posterior distributions of initial response probability p0",
   "Initial response probability p0",
   paste0("nlme_", var_name, "_p0_posteriors.png"),
-  save_fig_dir = save_fig_dir
+  save_fig_dir = save_fig_dir,
+  block_limits = list(
+    Block1 = c(0.7, 1),
+    Block2 = c(0.7, 1)
+  )
 )
 
 
@@ -598,4 +613,346 @@ p_p0_compare <- plot_pairwise_differences(
   save_fig_dir = save_fig_dir
 )
 
+# ==============================================================================
 
+
+
+
+# ==============================================================================
+# Endpoint contrasts: average of last 3 stimuli (stimuli 58, 59, 60)
+# ==============================================================================
+
+last_n <- 5
+last_stims <- (max(df_resp$stimulus) - last_n + 1):max(df_resp$stimulus)
+# e.g. stimuli 58, 59, 60  →  stimulus0 = 57, 58, 59
+
+grid_end <- expand.grid(
+  Genotype  = levels(df_resp$Genotype),
+  Block     = levels(df_resp$Block),
+  stimulus  = last_stims
+) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype  = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block     = factor(Block,    levels = levels(df_resp$Block))
+  )
+
+# Full posterior draws of the population-level prediction
+pred_end_draws <- fitted(
+  fit_model,
+  newdata    = grid_end,
+  re_formula = NA,
+  summary    = FALSE   # draws × rows  (ndraws × nrows)
+)
+
+# Average over the last 3 stimuli per genotype × block
+# grid_end rows: for each (Genotype, Block) combo, 3 consecutive stimulus rows
+# We average the 3 stimulus draws for each genotype × block combination
+n_combos  <- nrow(grid_end) / last_n   # = n_genotypes × n_blocks
+n_draws   <- nrow(pred_end_draws)
+
+# Build a draws data frame averaged over the last 3 stimuli
+draws_end <- bind_rows(
+  lapply(levels(df_resp$Genotype), function(g) {
+    bind_rows(
+      lapply(levels(df_resp$Block), function(b) {
+        row_idx <- which(grid_end$Genotype == g & grid_end$Block == b)
+        tibble(
+          draw     = seq_len(n_draws),
+          Genotype = factor(g, levels = levels(df_resp$Genotype)),
+          Block    = factor(b, levels = levels(df_resp$Block)),
+          value    = rowMeans(pred_end_draws[, row_idx])
+        )
+      })
+    )
+  })
+)
+
+# Verify before proceeding
+glimpse(draws_end)
+print(distinct(draws_end, Genotype, Block))
+# ------------------------------------------------------------------------------
+# Summary
+# ------------------------------------------------------------------------------
+end_summary <- draws_end %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    median = median(value),
+    low    = quantile(value, 0.025),
+    high   = quantile(value, 0.975),
+    .groups = "drop"
+  )
+
+print(end_summary)
+
+write.csv(
+  end_summary,
+  file.path(save_results_dir, paste0("nlme_", var_name, "_endpoint_summary.csv")),
+  row.names = FALSE
+)
+
+# ------------------------------------------------------------------------------
+# Pairwise comparisons
+# ------------------------------------------------------------------------------
+end_comparison <- compare_nlpar(
+  draws_end,
+  value_name = "p_end",
+  rope       = 0.02,
+  ratio      = FALSE
+)
+
+end_comparison_summary <- end_comparison$summary
+print(end_comparison_summary)
+
+write.csv(
+  end_comparison_summary,
+  file.path(save_results_dir, paste0("nlme_", var_name, "_endpoint_all_pairwise_comparisons.csv")),
+  row.names = FALSE
+)
+
+# ==============================================================================
+# Plots
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# 1. Posterior density of endpoint response probability
+# ------------------------------------------------------------------------------
+p_end_density <- ggplot(
+  draws_end,
+  aes(x = value, fill = Genotype)
+) +
+  facet_wrap(~Block, scales = "free_y") +
+  geom_density(alpha = 0.35) +
+  geom_vline(
+    data = end_summary,
+    aes(xintercept = median, color = Genotype),
+    linewidth = 0.8, linetype = "dashed"
+  ) +
+  scale_x_continuous(limits = c(0, 1)) +
+  theme_pubr(base_size = 14) +
+  labs(
+    x     = paste0("Response probability (mean of last ", last_n, " stimuli)"),
+    y     = "Posterior density",
+    title = paste0("Posterior distributions of endpoint response probability\n(mean of last ", last_n, " stimuli)"),
+    fill  = "Genotype",
+    color = "Genotype"
+  )
+
+print(p_end_density)
+
+ggsave(
+  file.path(save_fig_dir, paste0("nlme_", var_name, "_endpoint_posteriors.png")),
+  p_end_density,
+  width = 10, height = 5, dpi = 300, bg = "white"
+)
+
+# ------------------------------------------------------------------------------
+# 2. Pointrange summary plot
+# ------------------------------------------------------------------------------
+p_end_summary <- end_summary %>%
+  ggplot(aes(
+    x     = Genotype,
+    y     = median,
+    ymin  = low,
+    ymax  = high,
+    color = Genotype
+  )) +
+  facet_wrap(~Block) +
+  geom_pointrange(linewidth = 0.8, size = 0.8) +
+  coord_cartesian(ylim = c(0, 1)) +
+  theme_pubr(base_size = 14) +
+  theme(
+    axis.text.x  = element_text(angle = 30, hjust = 1),
+    legend.position = "none"
+  ) +
+  labs(
+    x     = "Genotype",
+    y     = paste0("Response probability (last ", last_n, " stimuli)"),
+    title = paste0("Endpoint response probability (last ", last_n, " stimuli)")
+  )
+
+print(p_end_summary)
+
+ggsave(
+  file.path(save_fig_dir, paste0("nlme_", var_name, "_endpoint_summary_pointrange.png")),
+  p_end_summary,
+  width = 8, height = 5, dpi = 300, bg = "white"
+)
+
+# ------------------------------------------------------------------------------
+# 3. Pairwise differences plot
+# ------------------------------------------------------------------------------
+p_end_compare <- plot_pairwise_differences(
+  end_comparison_summary,
+  "Endpoint probability difference",
+  paste0("All pairwise endpoint comparisons (last ", last_n, " stimuli)"),
+  paste0("nlme_", var_name, "_endpoint_all_pairwise_differences.png"),
+  save_fig_dir = save_fig_dir
+)
+
+print(p_end_compare)
+
+# ------------------------------------------------------------------------------
+# 4. Habituation curves with endpoint marked
+# ------------------------------------------------------------------------------
+# Add a vertical line and the endpoint summaries overlaid on the habituation plot
+p_hab_with_endpoint <- plot_habituation_probability(
+  df_resp    = df_resp,
+  fit_model  = fit_model,
+  raw_data   = "aggregate"
+) +
+  # shaded region for last 3 stimuli
+  geom_vline(
+    xintercept = min(last_stims) - 0.5,
+    linetype   = "dashed",
+    color      = "grey40",
+    linewidth  = 0.6
+  ) +
+  # endpoint posterior median + 95% CI as a cross
+  geom_pointrange(
+    data = end_summary,
+    aes(
+      x     = max(last_stims) + 1.5,  # just to the right of the last stimulus
+      y     = median,
+      ymin  = low,
+      ymax  = high,
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    size      = 0.8,
+    linewidth = 0.8
+  ) +
+  labs(caption = paste0(
+    "Dashed line marks start of last ", last_n,
+    " stimuli window. Pointrange to the right shows posterior median + 95% CI of endpoint."
+  ))
+
+print(p_hab_with_endpoint)
+
+ggsave(
+  file.path(save_fig_dir, paste0("nlme_", var_name, "_habituation_curves_with_endpoint.png")),
+  p_hab_with_endpoint,
+  width = 14, height = 7, dpi = 300, bg = "white"
+)
+
+
+
+
+# ==============================================================================
+# Extrapolation plot (set stimulus range here)
+# ==============================================================================
+extrap_to <- 600
+
+new_extrap <- df_resp %>%
+  group_by(Genotype, Block) %>%
+  summarise(.groups = "drop") %>%
+  reframe(
+    stimulus = seq(1, extrap_to, length.out = extrap_to * 2),
+    .by = c(Genotype, Block)
+  ) %>%
+  mutate(
+    stimulus0 = stimulus - 1,
+    Genotype  = factor(Genotype, levels = levels(df_resp$Genotype)),
+    Block     = factor(Block,    levels = levels(df_resp$Block))
+  )
+
+pred_extrap <- fitted(
+  fit_model,
+  newdata    = new_extrap,
+  re_formula = NA,
+  summary    = TRUE
+)
+
+pred_extrap_data <- bind_cols(new_extrap, as.data.frame(pred_extrap)) %>%
+  rename(fit = Estimate, CI_low = Q2.5, CI_high = Q97.5)
+
+pinf_lines <- pinf_draws_df %>%
+  group_by(Genotype, Block) %>%
+  summarise(
+    pinf_median = median(pinf),
+    .groups = "drop"
+  )
+
+p_extrap <- ggplot(
+  pred_extrap_data,
+  aes(x = stimulus, color = Genotype, fill = Genotype)
+) +
+  facet_grid(Block ~ Genotype, scales = "fixed") +
+  
+  geom_ribbon(
+    aes(ymin = CI_low, ymax = CI_high),
+    alpha = 0.15, color = NA
+  ) +
+  
+  geom_line(aes(y = fit), linewidth = 1.0) +
+  
+  geom_vline(
+    xintercept = max(df_resp$stimulus),
+    linetype   = "dashed",
+    color      = "grey30",
+    linewidth  = 0.6
+  ) +
+  
+  geom_hline(
+    data      = pinf_lines,
+    aes(yintercept = pinf_median, color = Genotype),
+    linetype  = "dotted",
+    linewidth = 0.8
+  ) +
+  
+  geom_text(
+    data  = pinf_lines,
+    aes(
+      x     = extrap_to * 0.95,
+      y     = pinf_median + 0.03,
+      label = paste0("p\u221e=", round(pinf_median, 2)),
+      color = Genotype
+    ),
+    inherit.aes = FALSE,
+    size        = 3,
+    hjust       = 1
+  ) +
+  
+  annotate(
+    "text",
+    x     = max(df_resp$stimulus) + extrap_to * 0.01,
+    y     = 0.5,
+    label = "data ends",
+    size  = 3,
+    color = "grey30",
+    hjust = 0,
+    angle = 90
+  ) +
+  
+  coord_cartesian(ylim = c(0, 1), xlim = c(1, extrap_to + 10)) +
+  
+  theme_pubr(base_size = 14) +
+  labs(
+    x       = "Stimulus number",
+    y       = "Response probability",
+    title   = paste0(
+      "Extrapolation to stimulus ", extrap_to,
+      " (dashed = data end, dotted = p\u221e)"
+    ),
+    color   = "Genotype",
+    fill    = "Genotype",
+    caption = "Dotted horizontal line = posterior median asymptote (p\u221e). Dashed vertical line = end of observed data."
+  ) +
+  theme(
+    legend.position = "top",
+    panel.spacing   = unit(1.2, "lines")
+  )
+
+print(p_extrap)
+
+ggsave(
+  file.path(
+    save_fig_dir,
+    paste0("nlme_", var_name, "_habituation_curves_extrapolated_", extrap_to, ".png")
+  ),
+  p_extrap,
+  width  = 14,
+  height = 7,
+  dpi    = 300,
+  bg     = "white"
+)

@@ -6,13 +6,16 @@
 plot_habituation_probability <- function(
     df_resp,
     fit_model,
-    save_fig_dir = NULL,
-    var_name = "response_prob",
-    raw_data = c("aggregate", "binary"),
-    binary_alpha = 0.06,
-    binary_size = 0.35,
-    jitter_width = 0.15,
-    jitter_height = 0.025
+    save_fig_dir        = NULL,
+    var_name            = "response_prob",
+    raw_data            = c("aggregate", "binary", "individual"),  # NEW
+    binary_alpha        = 0.06,
+    binary_size         = 0.35,
+    jitter_width        = 0.15,
+    jitter_height       = 0.025,
+    individual_alpha    = 0.25,   # NEW
+    individual_linewidth = 0.4,   # NEW
+    ndraws              = NULL    # NEW
 ) {
   
   raw_data <- match.arg(raw_data)
@@ -30,158 +33,137 @@ plot_habituation_probability <- function(
     ) %>%
     mutate(
       stimulus0 = stimulus - 1,
-      Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-      Block = factor(Block, levels = levels(df_resp$Block))
+      Genotype  = factor(Genotype, levels = levels(df_resp$Genotype)),
+      Block     = factor(Block,    levels = levels(df_resp$Block))
     )
   
   pred_resp <- fitted(
     fit_model,
-    newdata = new_resp,
+    newdata    = new_resp,
     re_formula = NA,
-    # robust = TRUE,  # use median
-    summary = TRUE
+    summary    = TRUE
   )
   
-  pred_resp_data <- bind_cols(
-    new_resp,
-    as.data.frame(pred_resp)
-  ) %>%
-    rename(
-      fit = Estimate,
-      CI_low = Q2.5,
-      CI_high = Q97.5
-    )
+  pred_resp_data <- bind_cols(new_resp, as.data.frame(pred_resp)) %>%
+    rename(fit = Estimate, CI_low = Q2.5, CI_high = Q97.5)
   
   raw_prob <- df_resp %>%
     group_by(Genotype, Block, stimulus) %>%
     summarise(
       response_prob = mean(move, na.rm = TRUE),
-      n = n(),
-      .groups = "drop"
+      n             = n(),
+      .groups       = "drop"
     )
   
   binary_data <- df_resp %>%
     mutate(
-      move = as.numeric(move),
+      move     = as.numeric(move),
       Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
-      Block = factor(Block, levels = levels(df_resp$Block))
+      Block    = factor(Block,    levels = levels(df_resp$Block))
     )
   
+  # ---- individual predicted curves -------------------------------------------
+  if (raw_data == "individual") {
+    
+    animal_info <- df_resp %>%
+      distinct(Genotype, Block, animal) %>%
+      mutate(
+        Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+        Block    = factor(Block,    levels = levels(df_resp$Block)),
+        animal   = factor(animal,   levels = levels(df_resp$animal))
+      )
+    
+    new_resp_animals <- animal_info %>%
+      left_join(new_resp, by = c("Genotype", "Block"),
+                relationship = "many-to-many")
+    
+    epred_args <- list(
+      object     = fit_model,
+      newdata    = new_resp_animals,
+      re_formula = NULL,
+      summary    = FALSE
+    )
+    if (!is.null(ndraws)) epred_args$ndraws <- ndraws
+    
+    epred_animals <- do.call(posterior_epred, epred_args)
+    
+    pred_per_animal <- new_resp_animals %>%
+      mutate(.row = row_number()) %>%
+      mutate(fit = colMeans(epred_animals))  # posterior mean per row
+  }
+  
+  # ---- build plot ------------------------------------------------------------
   p <- ggplot(
     pred_resp_data,
-    aes(
-      x = stimulus,
-      color = Genotype,
-      fill = Genotype
-    )
+    aes(x = stimulus, color = Genotype, fill = Genotype)
   ) +
-    
     facet_grid(Block ~ Genotype, scales = "fixed")
   
   if (raw_data == "aggregate") {
     p <- p +
       geom_point(
         data = raw_prob,
-        aes(
-          x = stimulus,
-          y = response_prob,
-          # size = n,  # show number of animals as dot size
-          color = Genotype
-        ),
+        aes(x = stimulus, y = response_prob, color = Genotype),
         inherit.aes = FALSE,
         alpha = 0.5,
-        size = 1
+        size  = 1
       )
   }
   
   if (raw_data == "binary") {
     p <- p +
       geom_jitter(
-        data = binary_data,
-        aes(
-          x = stimulus,
-          y = move,
-          color = Genotype
-        ),
+        data   = binary_data,
+        aes(x = stimulus, y = move, color = Genotype),
         inherit.aes = FALSE,
-        width = jitter_width,
+        width  = jitter_width,
         height = jitter_height,
-        alpha = binary_alpha,
-        size = binary_size
+        alpha  = binary_alpha,
+        size   = binary_size
+      )
+  }
+  
+  if (raw_data == "individual") {
+    p <- p +
+      geom_line(
+        data = pred_per_animal,
+        aes(x = stimulus, y = fit, group = animal, color = Genotype),
+        inherit.aes  = FALSE,
+        alpha        = individual_alpha,
+        linewidth    = individual_linewidth
       )
   }
   
   p <- p +
-    geom_ribbon(
-      aes(
-        ymin = CI_low,
-        ymax = CI_high
-      ),
-      alpha = 0.15,
-      color = NA
-    ) +
-    
-    geom_line(
-      aes(y = fit),
-      linewidth = 1.3
-    ) +
-    
+    geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.15, color = NA) +
+    geom_line(aes(y = fit), linewidth = 1.3) +
     coord_cartesian(ylim = c(0, 1)) +
-    
     theme_pubr(base_size = 14) +
-    
     labs(
-      x = "Stimulus number within block",
-      y = "Response probability",
+      x     = "Stimulus number within block",
+      y     = "Response probability",
       title = "Bayesian nonlinear habituation curves on probability scale",
       color = "Genotype",
-      fill = "Genotype"
+      fill  = "Genotype"
     ) +
-    
     theme(
       legend.position = "top",
-      panel.spacing = unit(1.2, "lines")
+      panel.spacing   = unit(1.2, "lines")
     )
   
+  # ---- save ------------------------------------------------------------------
   if (!is.null(save_fig_dir)) {
-    ggsave(
-      filename = file.path(
-        save_fig_dir,
-        paste0(
-          "nlme_",
-          var_name,
-          "_habituation_curves_probability_scale_",
-          raw_data,
-          ".png"
-        )
-      ),
-      plot = p,
-      width = 14,
-      height = 7,
-      dpi = 300
-    )
+    fname <- paste0("nlme_", var_name,
+                    "_habituation_curves_probability_scale_", raw_data)
     
-    ggsave(
-      filename = file.path(
-        save_fig_dir,
-        paste0(
-          "nlme_",
-          var_name,
-          "_habituation_curves_probability_scale_",
-          raw_data,
-          ".pdf"
-        )
-      ),
-      plot = p,
-      width = 14,
-      height = 7,
-      useDingbats = FALSE
-    )
+    ggsave(file.path(save_fig_dir, paste0(fname, ".png")),
+           plot = p, width = 14, height = 7, dpi = 300)
+    ggsave(file.path(save_fig_dir, paste0(fname, ".pdf")),
+           plot = p, width = 14, height = 7, useDingbats = FALSE)
   }
   
   return(p)
 }
-
 
 # ------------------------------------------------------------------------------
 # Latent-scale plot using posterior_linpred()
