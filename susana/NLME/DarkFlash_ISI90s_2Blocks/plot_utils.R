@@ -987,11 +987,14 @@ plot_habituation_ordinal <- function(
     title            = NULL,
     save_fig_dir     = NULL,
     var_name         = NULL,
-    raw_data         = c("aggregate", "trials"),
+    raw_data         = c("aggregate", "trials", "individual"),  # NEW
     trials_alpha     = 0.05,
     trials_size      = 0.4,
     jitter_width     = 0.10,
     jitter_height    = 0.05,
+    individual_alpha     = 0.25,   # NEW
+    individual_linewidth = 0.4,    # NEW
+    ndraws           = NULL,       # NEW
     y_limits         = NULL
 ) {
   
@@ -1021,7 +1024,7 @@ plot_habituation_ordinal <- function(
       Block     = factor(Block,    levels = levels(df_resp$Block))
     )
   
-  # ---- posterior_epred returns draws × N × K -----------------------------------
+  # ---- posterior_epred: population-level (draws × N × K) ---------------------
   epred_array <- posterior_epred(
     fit_model,
     newdata    = new_resp,
@@ -1029,7 +1032,6 @@ plot_habituation_ordinal <- function(
     summary    = FALSE
   )
   
-  # Collapse over categories into expected delay (draws × N)
   exp_cat <- .expected_category_from_epred(epred_array, category_values)
   
   pred_resp_data <- new_resp %>%
@@ -1058,6 +1060,38 @@ plot_habituation_ordinal <- function(
       Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
       Block    = factor(Block,    levels = levels(df_resp$Block))
     )
+  
+  # ---- individual predicted curves (re_formula = NULL to include random fx) --
+  if (raw_data == "individual") {
+    
+    animal_info <- df_resp %>%
+      distinct(Genotype, Block, animal) %>%
+      mutate(
+        Genotype = factor(Genotype, levels = levels(df_resp$Genotype)),
+        Block    = factor(Block,    levels = levels(df_resp$Block)),
+        animal   = factor(animal,   levels = levels(df_resp$animal))
+      )
+    
+    new_resp_animals <- animal_info %>%
+      left_join(new_resp, by = c("Genotype", "Block"),
+                relationship = "many-to-many")
+    
+    epred_args <- list(
+      object     = fit_model,
+      newdata    = new_resp_animals,
+      re_formula = NULL,          # include animal-level random effects
+      summary    = FALSE
+    )
+    if (!is.null(ndraws)) epred_args$ndraws <- ndraws
+    
+    epred_animals <- do.call(posterior_epred, epred_args)  # draws × N × K
+    
+    # Collapse K categories → expected value, then average over draws
+    exp_cat_animals <- .expected_category_from_epred(epred_animals, category_values)
+    
+    pred_per_animal <- new_resp_animals %>%
+      mutate(fit = colMeans(exp_cat_animals))
+  }
   
   # ---- build plot ------------------------------------------------------------
   p <- ggplot(
@@ -1095,6 +1129,17 @@ plot_habituation_ordinal <- function(
       )
   }
   
+  if (raw_data == "individual") {
+    p <- p +
+      geom_line(
+        data = pred_per_animal,
+        aes(x = stimulus, y = fit, group = animal, color = Genotype),
+        inherit.aes = FALSE,
+        alpha     = individual_alpha,
+        linewidth = individual_linewidth
+      )
+  }
+  
   p <- p +
     geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.15, color = NA) +
     geom_line(aes(y = fit), linewidth = 1.3) +
@@ -1128,7 +1173,6 @@ plot_habituation_ordinal <- function(
   
   return(p)
 }
-
 
 # ==============================================================================
 # Animal-averaged expected category plot

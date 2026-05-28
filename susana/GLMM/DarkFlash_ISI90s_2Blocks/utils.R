@@ -116,31 +116,41 @@ validate_model <- function(model, df) {
 
 plot_habituation <- function(df_final, model, label,
                              transform = c("plogis", "exp", "none"),
-                             raw_var = "max_cumsum") {
-  # --- 0. Setup ----------------------------------------------
+                             raw_var = "max_cumsum",
+                             raw_points = c("mean", "raw", "curves"),
+                             y_limits = NULL,
+                             y_break = NULL,
+                             genotype_order = NULL,
+                             fish_id = "fish_id",
+                             colors = NULL) {
   require(dplyr)
   require(tidyr)
   require(ggplot2)
   require(ggpubr)
   
-  # Match the transformation argument
-  transform <- match.arg(transform)
+  transform   <- match.arg(transform)
+  raw_points  <- match.arg(raw_points)
   
-  # --- 1. Raw summary (depends on what you're plotting) -------
-  # If you want probability: use mean(move)
-  # Otherwise: use mean(raw_var)  (default: max_cumsum)
-  raw_summary <- df_final %>%
-    group_by(Block, Genotype, stimulus) %>%
-    summarise(
-      y_raw = if (transform == "plogis") {
-        mean(move, na.rm = TRUE)
-      } else {
-        mean(.data[[raw_var]], na.rm = TRUE)
-      },
-      .groups = "drop"
-    )
+  geno_levels <- if (!is.null(genotype_order)) genotype_order else levels(df_final$Genotype)
+  df_final <- df_final %>% mutate(Genotype = factor(Genotype, levels = geno_levels))
   
-  # --- 2. Dynamic prediction grid ----------------------------
+  raw_summary <- if (raw_points == "mean") {
+    df_final %>%
+      group_by(Block, Genotype, stimulus) %>%
+      summarise(
+        y_raw = if (transform == "plogis") {
+          mean(move, na.rm = TRUE)
+        } else {
+          mean(.data[[raw_var]], na.rm = TRUE)
+        },
+        .groups = "drop"
+      )
+  } else {
+    df_final %>%
+      mutate(y_raw = if (transform == "plogis") move else .data[[raw_var]]) %>%
+      select(Block, Genotype, stimulus, y_raw, fish_id_col = all_of(fish_id))
+  }
+  
   blocks <- sort(unique(df_final$Block))
   
   stim_ranges <- lapply(blocks, function(b) {
@@ -150,7 +160,7 @@ plot_habituation <- function(df_final, model, label,
   
   new_data <- bind_rows(lapply(blocks, function(b) {
     expand.grid(
-      Block = as.character(b),
+      Block    = as.character(b),
       stimulus = stim_ranges[[as.character(b)]][1]:
         stim_ranges[[as.character(b)]][2]
     )
@@ -158,19 +168,16 @@ plot_habituation <- function(df_final, model, label,
     tidyr::crossing(Genotype = unique(df_final$Genotype)) %>%
     mutate(stimulus_log = log(stimulus))
   
-  # Ensure no log(0)
   new_data <- new_data %>%
     mutate(
-      stimulus = ifelse(stimulus <= 0, NA, stimulus),
+      stimulus     = ifelse(stimulus <= 0, NA, stimulus),
       stimulus_log = log(stimulus)
     ) %>%
     filter(!is.na(stimulus_log))
   
-  # Align factor levels
   new_data$Genotype <- factor(new_data$Genotype, levels = levels(df_final$Genotype))
   new_data$Block    <- factor(new_data$Block,    levels = levels(df_final$Block))
   
-  # --- 3. Model predictions ----------------------------------
   pred <- predict(model, newdata = new_data, re.form = NA, se.fit = TRUE)
   
   transform_fun <- switch(transform,
@@ -185,26 +192,68 @@ plot_habituation <- function(df_final, model, label,
       CI_high = transform_fun(pred$fit + 1.96 * pred$se.fit)
     )
   
-  # --- 4. Facet labels ---------------------------------------
   labels <- setNames(
     paste0("Block ", blocks, ": ", sapply(stim_ranges, `[`, 2), " flashes"),
     blocks
   )
   
-  # --- 5. Plot -----------------------------------------------
+  raw_layer <- if (raw_points == "curves") {
+    list(
+      geom_line(
+        data = raw_summary,
+        aes(x = stimulus, y = y_raw,
+            group = interaction(fish_id_col, Block),
+            color = Genotype),
+        alpha = 0.05,
+        linewidth = 0.3,
+        inherit.aes = FALSE
+      )
+    )
+  } else if (raw_points == "raw") {
+    list(
+      geom_jitter(
+        data = raw_summary,
+        aes(x = stimulus, y = y_raw, color = Genotype),
+        alpha = 0.15, size = 0.8,
+        width = 0.25, height = 0.02,
+        inherit.aes = FALSE
+      )
+    )
+  } else {
+    list(
+      geom_point(
+        data = raw_summary,
+        aes(x = stimulus, y = y_raw, color = Genotype),
+        alpha = 0.26, size = 1,
+        inherit.aes = FALSE
+      )
+    )
+  }
+  
+  color_scales <- if (!is.null(colors)) {
+    list(
+      scale_color_manual(values = colors),
+      scale_fill_manual(values = colors)
+    )
+  } else {
+    list()
+  }
+  
   g <- ggplot(new_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
     facet_wrap(~Block, ncol = length(blocks), scales = "free_x",
                labeller = as_labeller(labels)) +
-    geom_point(
-      data = raw_summary,
-      aes(x = stimulus, y = y_raw, color = Genotype),
-      size = 1,
-      alpha = 0.26
-    ) +
-    geom_line(aes(y = fit), size = 1.5) +
-    geom_ribbon(aes(ymin = CI_low, ymax = CI_high),
-                alpha = 0.1, color = NA) +
+    raw_layer +
+    geom_line(aes(y = fit), linewidth = 1.5) +
+    geom_ribbon(aes(ymin = CI_low, ymax = CI_high), alpha = 0.1, color = NA) +
+    color_scales +
     scale_x_continuous(n.breaks = 4) +
+    coord_cartesian(ylim = y_limits) +
+    scale_y_continuous(
+      breaks = if (!is.null(y_limits) && !is.null(y_break))
+        seq(y_limits[1], y_limits[2], by = y_break)
+      else
+        waiver()
+    ) +
     labs(
       x = "Stimulus number (within block)",
       y = label,
@@ -213,11 +262,11 @@ plot_habituation <- function(df_final, model, label,
     ) +
     theme_pubr(base_size = 14) +
     theme(
-      panel.spacing = unit(1.5, "lines")
+      panel.spacing = unit(1.5, "lines"),
+      panel.grid.major = element_line(color = "grey95", linewidth = 0.5)
     )
   
-  # Keep probability plots in [0,1]; otherwise don't constrain y
-  if (transform == "plogis") {
+  if (transform == "plogis" && is.null(y_limits)) {
     g <- g + expand_limits(y = c(0, 1))
   }
   
@@ -229,7 +278,12 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
                                                     raw_var = "max_peak",
                                                     transform = c("exp", "none", "plogis"),
                                                     n_points = 100,
-                                                    raw_points = c("mean", "raw")) {
+                                                    raw_points = c("mean", "raw", "curves"),
+                                                    y_limits = NULL,
+                                                    y_break = NULL,
+                                                    genotype_order = NULL,
+                                                    fish_id = "fish_id",
+                                                    colors = NULL) {  
   require(dplyr)
   require(tidyr)
   require(ggplot2)
@@ -237,6 +291,14 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
   
   transform <- match.arg(transform)
   raw_points <- match.arg(raw_points)
+  
+  geno_levels <- if (!is.null(genotype_order)) {
+    genotype_order
+  } else {
+    levels(df_final$Genotype)
+  }
+  df_final <- df_final %>%
+    mutate(Genotype = factor(Genotype, levels = geno_levels))
   
   transform_fun <- switch(
     transform,
@@ -254,7 +316,9 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
       )
   } else {
     df_final %>%
-      select(Genotype, Block, stimulus, y_raw = all_of(raw_var))
+      select(Genotype, Block, stimulus,
+             y_raw = all_of(raw_var),
+             fish_id_col = all_of(fish_id))
   }
   
   new_data <- df_final %>%
@@ -289,39 +353,64 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
       CI_high = transform_fun(pred$fit + 1.96 * pred$se.fit)
     )
   
-  point_alpha <- if (raw_points == "mean") 0.5 else 0.15
-  point_size  <- if (raw_points == "mean") 1.5 else 0.8
-  
-  point_geom <- if (raw_points == "raw" && transform == "plogis") {
-    geom_jitter(
+  raw_layer <- if (raw_points == "curves") {
+    list(
+      geom_line(
+        data = point_data,
+        aes(x = stimulus, y = y_raw,
+            group = interaction(fish_id_col, Block),
+            color = Genotype),
+        alpha = 0.05,
+        linewidth = 0.3,
+        inherit.aes = FALSE
+      )
+    )
+  } else if (raw_points == "raw" && transform == "plogis") {
+    list(geom_jitter(
       data = point_data,
       aes(x = stimulus, y = y_raw, color = Genotype),
-      alpha = point_alpha,
-      size = point_size,
-      width = 0.25,
-      height = 0.02,
+      alpha = 0.15, size = 0.8,
+      width = 0.25, height = 0.02,
       inherit.aes = FALSE
+    ))
+  } else {
+    list(geom_point(
+      data = point_data,
+      aes(x = stimulus, y = y_raw, color = Genotype),
+      alpha = if (raw_points == "mean") 0.5 else 0.15,
+      size  = if (raw_points == "mean") 1.5 else 0.8,
+      inherit.aes = FALSE
+    ))
+  }
+  
+  # Color scales: manual if provided, default ggplot otherwise
+  color_scales <- if (!is.null(colors)) {
+    list(
+      scale_color_manual(values = colors),
+      scale_fill_manual(values = colors)
     )
   } else {
-    geom_point(
-      data = point_data,
-      aes(x = stimulus, y = y_raw, color = Genotype),
-      alpha = point_alpha,
-      size = point_size,
-      inherit.aes = FALSE
-    )
+    list()
   }
   
   ggplot(new_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
     facet_grid(Block ~ Genotype, scales = "free_y") +
-    point_geom +
+    raw_layer +
     geom_ribbon(
       aes(ymin = CI_low, ymax = CI_high),
       alpha = 0.12,
       color = NA
     ) +
     geom_line(aes(y = fit), linewidth = 1.3) +
+    color_scales +
     scale_x_continuous(n.breaks = 4) +
+    coord_cartesian(ylim = y_limits) +
+    scale_y_continuous(
+      breaks = if (!is.null(y_limits) && !is.null(y_break))
+        seq(y_limits[1], y_limits[2], by = y_break)
+      else
+        waiver()
+    ) +
     theme_pubr(base_size = 14) +
     labs(
       x = "Stimulus number within block",
@@ -330,109 +419,31 @@ plot_habituation_glmm_by_genotype_block <- function(df_final, model,
       fill = "Genotype"
     ) +
     theme(
-      panel.spacing = unit(1.2, "lines")
+      panel.spacing = unit(1.2, "lines"),
+      panel.grid.major = element_line(color = "grey95", linewidth = 0.5)
     )
 }
 
-
-plot_habituation_glmm_by_genotype_block_OLD <- function(df_final, model,
-                                                    label = "Peak distance moved (mm)",
-                                                    raw_var = "max_peak",
-                                                    transform = c("exp", "none", "plogis"),
-                                                    n_points = 100) {
-  require(dplyr)
-  require(tidyr)
-  require(ggplot2)
-  require(ggpubr)
-  
-  transform <- match.arg(transform)
-  
-  transform_fun <- switch(
-    transform,
-    exp = exp,
-    none = identity,
-    plogis = plogis
-  )
-  
-  raw_summary <- df_final %>%
-    group_by(Genotype, Block, stimulus) %>%
-    summarise(
-      y_raw = mean(.data[[raw_var]], na.rm = TRUE),
-      .groups = "drop"
-    )
-  
-  new_data <- df_final %>%
-    group_by(Genotype, Block) %>%
-    summarise(
-      stim_min = min(stimulus, na.rm = TRUE),
-      stim_max = max(stimulus, na.rm = TRUE),
-      .groups = "drop"
-    ) %>%
-    group_by(Genotype, Block) %>%
-    reframe(
-      stimulus = seq(stim_min, stim_max, length.out = n_points)
-    ) %>%
-    mutate(
-      stimulus_log = log(stimulus),
-      Genotype = factor(Genotype, levels = levels(df_final$Genotype)),
-      Block = factor(Block, levels = levels(df_final$Block))
-    )
-  
-  pred <- predict(
-    model,
-    newdata = new_data,
-    type = "link",
-    # type = predict_type,
-    se.fit = TRUE,
-    re.form = NA
-  )
-  
-  new_data <- new_data %>%
-    mutate(
-      fit = transform_fun(pred$fit),
-      CI_low = transform_fun(pred$fit - 1.96 * pred$se.fit),
-      CI_high = transform_fun(pred$fit + 1.96 * pred$se.fit)
-    )
-  
-  ggplot(new_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
-    facet_grid(Block ~ Genotype, scales = "free_y") +
-    geom_point(
-      data = raw_summary,
-      aes(x = stimulus, y = y_raw, color = Genotype),
-      alpha = 0.25,
-      size = 1,
-      inherit.aes = FALSE
-    ) +
-    geom_ribbon(
-      aes(ymin = CI_low, ymax = CI_high),
-      alpha = 0.12,
-      color = NA
-    ) +
-    geom_line(aes(y = fit), linewidth = 1.3) +
-    scale_x_continuous(n.breaks = 4) +
-    theme_pubr(base_size = 14) +
-    labs(
-      x = "Stimulus number within block",
-      y = label,
-      color = "Genotype",
-      fill = "Genotype"
-    ) +
-    theme(
-      panel.spacing = unit(1.2, "lines")
-    )
-}
 
 plot_habituation_clmm_by_genotype_block <- function(df_final, model,
                                                     label = "Response delay (s)",
                                                     raw_var = "delay",
                                                     n_points = 100,
-                                                    raw_points = c("mean", "raw")) {
+                                                    raw_points = c("mean", "raw", "curves"),
+                                                    y_limits = NULL,
+                                                    y_break = NULL,
+                                                    genotype_order = NULL,
+                                                    fish_id = "fish_id",
+                                                    colors = NULL) {
   require(dplyr)
   require(tidyr)
   require(ggplot2)
   require(ggpubr)
   
   raw_points <- match.arg(raw_points)
+  
+  geno_levels <- if (!is.null(genotype_order)) genotype_order else levels(df_final$Genotype)
+  df_final <- df_final %>% mutate(Genotype = factor(Genotype, levels = geno_levels))
   
   point_data <- if (raw_points == "mean") {
     df_final %>%
@@ -445,7 +456,9 @@ plot_habituation_clmm_by_genotype_block <- function(df_final, model,
   } else {
     df_final %>%
       mutate(stimulus = as.numeric(stimulus)) %>%
-      select(Genotype, Block, stimulus, y_raw = all_of(raw_var))
+      select(Genotype, Block, stimulus,
+             y_raw = all_of(raw_var),
+             fish_id_col = all_of(fish_id))
   }
   
   new_data <- df_final %>%
@@ -472,7 +485,7 @@ plot_habituation_clmm_by_genotype_block <- function(df_final, model,
     data = new_data
   )
   
-  beta <- model$beta
+  beta  <- model$beta
   alpha <- model$alpha
   
   X <- X[, names(beta), drop = FALSE]
@@ -483,39 +496,71 @@ plot_habituation_clmm_by_genotype_block <- function(df_final, model,
   
   compute_expected_delay <- function(eta_vec, alpha, delay_values) {
     cum_probs <- sapply(alpha, function(a) plogis(a - eta_vec))
-    
     probs <- cbind(
       cum_probs[, 1],
       cum_probs[, -1, drop = FALSE] -
         cum_probs[, -ncol(cum_probs), drop = FALSE],
       1 - cum_probs[, ncol(cum_probs)]
     )
-    
     as.vector(probs %*% delay_values)
   }
   
-  V <- vcov(model)
-  Vbeta <- V[names(beta), names(beta)]
+  V      <- vcov(model)
+  Vbeta  <- V[names(beta), names(beta)]
   eta_se <- sqrt(diag(X %*% Vbeta %*% t(X)))
   
-  new_data$fit     <- compute_expected_delay(eta,                   alpha, delay_values)
-  new_data$CI_low  <- compute_expected_delay(eta - 1.96 * eta_se,  alpha, delay_values)
-  new_data$CI_high <- compute_expected_delay(eta + 1.96 * eta_se,  alpha, delay_values)
+  new_data$fit     <- compute_expected_delay(eta,                  alpha, delay_values)
+  new_data$CI_low  <- compute_expected_delay(eta - 1.96 * eta_se, alpha, delay_values)
+  new_data$CI_high <- compute_expected_delay(eta + 1.96 * eta_se, alpha, delay_values)
   
   point_alpha <- if (raw_points == "mean") 0.5 else 0.15
   point_size  <- if (raw_points == "mean") 1.5 else 0.8
   
+  raw_layer <- if (raw_points == "curves") {
+    list(
+      geom_line(
+        data = point_data,
+        aes(x = stimulus, y = y_raw,
+            group = interaction(fish_id_col, Block),
+            color = Genotype),
+        alpha = 0.05,
+        linewidth = 0.3,
+        inherit.aes = FALSE
+      )
+    )
+  } else if (raw_points == "raw") {
+    list(
+      geom_jitter(
+        data = point_data,
+        aes(x = stimulus, y = y_raw, color = Genotype),
+        alpha = point_alpha, size = point_size,
+        width = 0.25, height = 0.02,
+        inherit.aes = FALSE
+      )
+    )
+  } else {
+    list(
+      geom_point(
+        data = point_data,
+        aes(x = stimulus, y = y_raw, color = Genotype),
+        alpha = point_alpha, size = point_size,
+        inherit.aes = FALSE
+      )
+    )
+  }
+  
+  color_scales <- if (!is.null(colors)) {
+    list(
+      scale_color_manual(values = colors),
+      scale_fill_manual(values = colors)
+    )
+  } else {
+    list()
+  }
+  
   ggplot(new_data, aes(x = stimulus, color = Genotype, fill = Genotype)) +
     facet_grid(Block ~ Genotype, scales = "free_y") +
-    geom_jitter(
-      data = point_data,
-      aes(x = stimulus, y = y_raw, color = Genotype),
-      alpha = point_alpha,
-      size = point_size,
-      width = 0.25,
-      height = 0.02,
-      inherit.aes = FALSE
-    ) +
+    raw_layer +
     geom_ribbon(
       aes(ymin = CI_low, ymax = CI_high),
       alpha = 0.12,
@@ -525,7 +570,15 @@ plot_habituation_clmm_by_genotype_block <- function(df_final, model,
       aes(y = fit, group = interaction(Genotype, Block)),
       linewidth = 1.3
     ) +
+    color_scales +
     scale_x_continuous(n.breaks = 4) +
+    coord_cartesian(ylim = y_limits) +
+    scale_y_continuous(
+      breaks = if (!is.null(y_limits) && !is.null(y_break))
+        seq(y_limits[1], y_limits[2], by = y_break)
+      else
+        waiver()
+    ) +
     theme_pubr(base_size = 14) +
     labs(
       x = "Stimulus number within block",
@@ -534,9 +587,12 @@ plot_habituation_clmm_by_genotype_block <- function(df_final, model,
       fill = "Genotype"
     ) +
     theme(
-      panel.spacing = unit(1.2, "lines")
+      panel.spacing = unit(1.2, "lines"),
+      panel.grid.major = element_line(color = "grey95", linewidth = 0.5)
     )
 }
+
+
 
 save_plot <- function(g_plot, file_dir, width=10, height=7, dpi=600){
   ggsave(

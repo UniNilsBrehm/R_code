@@ -277,6 +277,19 @@ fit_model_mm <- readRDS(
 fit_model <- fit_model_exp
 
 # Population-level
+p_hab_ind <- plot_habituation_ordinal(
+  df_resp, fit_model,
+  response_var = "delay",
+  raw_data = "individual",
+  y_label = "Delay (Exp model)",
+  y_limits = c(0, 4),
+  save_fig_dir = save_fig_dir,
+  ndraws = 200
+)
+
+print(p_hab_ind)
+
+# Population-level
 p_hab <- plot_habituation_ordinal(
   df_resp, fit_model,
   response_var = "delay",
@@ -322,7 +335,18 @@ print(loo_mm)
 print(loo_exp)
 loo_compare(loo_mm, loo_exp)
 
+# ==============================================================================
+# Habituation Curves Plot
 # Population-level
+p_hab_exp_ind <- plot_habituation_ordinal(
+  df_resp, fit_model_exp,
+  response_var = "delay",
+  raw_data = "individual",
+  y_label = "Delay (Exp model)",
+  y_limits = c(0, 4)
+)
+
+
 p_hab_exp <- plot_habituation_ordinal(
   df_resp, fit_model_exp,
   response_var = "delay",
@@ -343,7 +367,6 @@ print(p_hab_exp)
 print(p_hab_mm)
 
 
-# Population-level
 p_hab_exp <- plot_habituation_ordinal(
   df_resp, fit_model_exp,
   response_var = "delay",
@@ -351,7 +374,7 @@ p_hab_exp <- plot_habituation_ordinal(
   y_label = "Delay (Exp model)",
   y_limits = c(0, 4)
 )
-# Population-level
+
 p_hab_exp_agg <- plot_habituation_ordinal(
   df_resp, fit_model_exp,
   response_var = "delay",

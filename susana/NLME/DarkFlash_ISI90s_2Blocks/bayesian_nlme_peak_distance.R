@@ -14,18 +14,18 @@ library(loo)
 library(DHARMa)
 library(bayesplot)
 
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
-source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/nlme_utils.R")
+# source("C:/Users/NilsPC/Desktop/Susana/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
-# source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/utils.R")
-# source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/utils.R")
+source("C:/UniFreiburg/Code/R_code/susana/NLME/DarkFlash_ISI90s_2Blocks/plot_utils.R")
 
 # source("D:/Behavior_Data/R_code/susana/nlme_utils.R")
 # source("D:/Behavior_Data/R_code/susana/plot_utils.R")
 
 # base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/DarkFlash_ISI90s_2Blocks"
-# base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
-base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/NLME//DarkFlash_ISI90s_2Blocks"
+base_dir <- "D:/WorkingData/Susana/NLME/DarkFlash_ISI90s_2Blocks"
+# base_dir <- "C:/Users/NilsPC/Desktop/Susana/Susana/NLME//DarkFlash_ISI90s_2Blocks"
 
 file_dir <- file.path(
   base_dir,
