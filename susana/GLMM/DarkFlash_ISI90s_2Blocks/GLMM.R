@@ -33,8 +33,25 @@ library(performance)  # Model diagnostics (AIC, R², etc.)
 library(ggpubr)       # Publication-ready plots
 library(ordinal)
 
-source("C:/UniFreiburg/Code/R_code/susana/GLMM/DarkFlash_ISI90s_2Blocks/utils.R")
-base_dir <- "D:/WorkingData/Susana/GLMM/DarkFlash_ISI90s_2Blocks"
+# ==============================================================================
+machine <- Sys.info()[["nodename"]]
+
+paths <- switch(
+  machine,
+  "DESKTOP-5N5AJ0U"     = list(
+    code = "C:/Users/NilsPC/Desktop/Susana/R_code/susana",
+    data = "C:/Users/NilsPC/Desktop/Susana/Susana"),
+
+  "UNIFREIBURG" = list(
+    code = "C:/UniFreiburg/Code/R_code/susana",
+    data = "D:/WorkingData/Susana"),
+  
+  stop("Unknown machine: ", machine, " — add it to the switch block")
+)
+
+source(file.path(paths$code, "GLMM/DarkFlash_ISI90s_2Blocks/utils.R"))
+base_dir <- file.path(paths$data, "GLMM/DarkFlash_ISI90s_2Blocks")
+
 
 file_dir <- file.path(
   base_dir,
@@ -66,6 +83,9 @@ df_final <- df_final %>%
   mutate(fish_id = paste(Video, Well, sep = "_"))
 df_final_sub <- df_final_sub %>%
   mutate(fish_id = paste(Video, Well, sep = "_"))
+
+df_final_sub <- df_final_sub %>%
+  mutate(peak_log = log(max_peak))
 
 # base_dir <- "D:/WorkingData/Susana/GLMM/DarkFlash_ISI90s_2Blocks/TEST"
 save_fig_dir = file.path(base_dir, "figs")
@@ -155,9 +175,19 @@ geno_colors <- c(
 # Fit Models
 # ==============================================================================
 message("Fitting GLMM models...")
+
+df_final_sub$stimulus_inv <- 1 / df_final_sub$stimulus
+
 # --- Model 1: Peak Movement (Gamma GLMM) -------------------------------------
 m_peak <- glmmTMB(
   max_peak ~ Genotype * stimulus_log * Block + (stimulus_log | Video/Well),
+  family = Gamma(link = "log"),
+  # family = t_family(link = "log"),
+  data = df_final_sub
+)
+
+m_peak_v2 <- glmmTMB(
+  max_peak ~ Genotype * stimulus_log * Block + stimulus_inv + (stimulus_log | Video/Well),
   family = Gamma(link = "log"),
   data = df_final_sub
 )
@@ -165,6 +195,12 @@ m_peak <- glmmTMB(
 # --- Model 2: Summed Distance (Gamma GLMM) -----------------------------------
 m_sum <- glmmTMB(
   max_cumsum ~ Genotype * stimulus_log * Block + (stimulus_log | Video/Well),
+  family = Gamma(link = "log"),
+  data = df_final_sub
+)
+
+m_sum_v2 <- glmmTMB(
+  max_cumsum ~ Genotype * stimulus_log * Block + stimulus_inv + (stimulus_log | Video/Well),
   family = Gamma(link = "log"),
   data = df_final_sub
 )
@@ -215,7 +251,7 @@ m_prob <- readRDS(file.path(base_dir, "models", "m_prob.rds"))
 # ==============================================================================
 message("Validating models...")
 
-# Residual check
+# Residual check1
 model_residuals_check(m_peak, df_final_sub)
 model_residuals_check(m_sum, df_final_sub)
 model_residuals_check(m_delay, df_final_sub)
@@ -266,6 +302,33 @@ get_all_comparisons(
 # ==============================================================================
 # Plot Habituation Curves Separated - loop over raw_points styles
 # ==============================================================================
+plot_habituation_glmm_by_genotype_block(
+  df_final  = df_final_sub,
+  model     = m_sum,
+  label     = "Summed distance moved (mm)",
+  raw_var   = "max_cumsum",
+  transform = "exp",
+  raw_points = "mean",
+  y_limits  = c(0, 20),
+  y_break   = 2,
+  fish_id        = "fish_id",
+  colors         = geno_colors,
+  genotype_order = names(geno_colors),
+)
+
+plot_habituation_glmm_by_genotype_block_random_effects(
+  df_final  = df_final_sub,
+  model     = m_sum_v2,
+  label     = "Peak distance moved (mm)",
+  raw_var   = "max_cumsum",
+  transform = "exp",
+  raw_points = "mean",
+  y_limits  = c(0, 20),
+  y_break   = 2,
+  fish_id        = "fish_id",
+  colors         = geno_colors,
+  genotype_order = names(geno_colors),
+)
 
 plot_configs <- list(
   list(
@@ -354,186 +417,10 @@ for (rp in c("raw", "mean")) {
     message("Saved: ", out_file)
   }
 }
-# ==============================================================================
-# Test Split Model
-
-# Main habituation model: stimulus 2 onwards
-df_final_sub_hab <- df_final_sub %>%
-  filter(as.numeric(stimulus) > 1) %>%
-  mutate(stimulus_log = log(as.numeric(stimulus) - 1))
-# now log(1)=0 at stimulus 2, scale starts clean
-
-m_peak_hab <- glmmTMB(
-  max_peak ~ Genotype * stimulus_log * Block + (stimulus_log | Video/Well),
-  family = Gamma(link = "log"),
-  data = df_final_sub_hab
-)
-
-# Stimulus 1 as separate initial reactivity model
-df_stim1 <- df_final_sub %>%
-  filter(as.numeric(stimulus) == 1)
-
-m_peak_stim1 <- glmmTMB(
-  max_peak ~ Genotype * Block + (1 | Video/Well),
-  family = Gamma(link = "log"),
-  data = df_stim1
-)
-
-# ==============================================================================
-# Plot: Habituation curves with stimulus 1 as separate point
-# ==============================================================================
-
-# --- 1. Predictions from habituation model (stimulus 2+) ---
-pred_grid_hab <- expand.grid(
-  Genotype    = levels(factor(df_final_sub_hab$Genotype)),
-  Block       = levels(factor(df_final_sub_hab$Block)),
-  stimulus    = 2:60
-) %>%
-  mutate(stimulus_log = log(stimulus - 1))
-
-# Population-level predictions
-pred_hab <- predict(
-  m_peak_hab,
-  newdata = pred_grid_hab,
-  re.form = NA,
-  type    = "link",
-  se.fit  = TRUE
-)
-
-pred_grid_hab <- pred_grid_hab %>%
-  mutate(
-    fit = exp(pred_hab$fit),
-    lwr = exp(pred_hab$fit - 1.96 * pred_hab$se.fit),
-    upr = exp(pred_hab$fit + 1.96 * pred_hab$se.fit)
-  )
-
-# --- 2. Predictions from stimulus-1 model ---
-pred_grid_stim1 <- expand.grid(
-  Genotype = levels(factor(df_stim1$Genotype)),
-  Block    = levels(factor(df_stim1$Block))
-) %>%
-  mutate(stimulus = 1)
-
-pred_stim1 <- predict(
-  m_peak_stim1,
-  newdata = pred_grid_stim1,
-  re.form = NA,
-  type    = "link",
-  se.fit  = TRUE
-)
-
-pred_grid_stim1 <- pred_grid_stim1 %>%
-  mutate(
-    fit = exp(pred_stim1$fit),
-    lwr = exp(pred_stim1$fit - 1.96 * pred_stim1$se.fit),
-    upr = exp(pred_stim1$fit + 1.96 * pred_stim1$se.fit)
-  )
-
-# --- 3. Raw aggregate points ---
-df_agg <- df_final_sub %>%
-  mutate(stimulus = as.numeric(stimulus)) %>%
-  group_by(Genotype, Block, stimulus) %>%
-  summarise(
-    mean_peak = mean(max_peak, na.rm = TRUE),
-    .groups   = "drop"
-  )
-
-# --- 5. Plot ---
-p_peak_split <- ggplot() +
-  
-  # Raw aggregate points (all stimuli)
-  geom_point(
-    data  = df_agg,
-    aes(x = stimulus, y = mean_peak, color = Genotype),
-    alpha = 0.4,
-    size  = 1.2
-  ) +
-  
-  # Ribbon + line: habituation model (stimulus 2+)
-  geom_ribbon(
-    data = pred_grid_hab,
-    aes(x = stimulus, ymin = lwr, ymax = upr, fill = Genotype),
-    alpha = 0.2
-  ) +
-  geom_line(
-    data      = pred_grid_hab,
-    aes(x = stimulus, y = fit, color = Genotype),
-    linewidth = 1.2
-  ) +
-  
-  # Stimulus-1 model: point estimate + error bar
-  geom_pointrange(
-    data = pred_grid_stim1,
-    aes(
-      x      = stimulus,
-      y      = fit,
-      ymin   = lwr,
-      ymax   = upr,
-      color  = Genotype
-    ),
-    size      = 0.8,
-    linewidth = 1.0,
-    shape     = 18   # diamond to visually distinguish from raw points
-  ) +
-  
-  # Dashed connector line between stimulus 1 estimate and start of curve
-  geom_segment(
-    data = pred_grid_stim1 %>%
-      left_join(
-        pred_grid_hab %>% filter(stimulus == 2),
-        by      = c("Genotype", "Block"),
-        suffix  = c("_s1", "_s2")
-      ),
-    aes(
-      x      = 1,
-      xend   = 2,
-      y      = fit_s1,
-      yend   = fit_s2,
-      color  = Genotype
-    ),
-    linetype  = "dashed",
-    linewidth = 0.7
-  ) +
-  
-  scale_color_manual(values = geno_colors) +
-  scale_fill_manual(values  = geno_colors) +
-  
-  facet_grid(Block ~ Genotype) +
-  
-  labs(
-    x     = "Stimulus number within block",
-    y     = "Peak distance moved (mm)",
-    color = "Genotype",
-    fill  = "Genotype",
-    title = "Habituation curves — stimulus 1 modelled separately"
-  ) +
-  
-  theme_pubr(base_size = 14) +
-  theme(
-    legend.position = "top",
-    panel.spacing   = unit(1.2, "lines")
-  )
-
-print(p_peak_split)
-
-ggsave(
-  filename = file.path(save_fig_dir,
-                       "GLMM_peak_habituation_stim1_separate.png"),
-  plot   = p_peak_split,
-  width  = 14,
-  height = 7,
-  dpi    = 300,
-  bg     = "white"
-)
-
-
-
-
 
 # ==============================================================================
 # GLMM Contrast Plots
 # ==============================================================================
-
 # ==============================================================================
 # 0. Helpers
 # ==============================================================================
